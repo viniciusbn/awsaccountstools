@@ -3,13 +3,15 @@ This script was designed to auto populate AWS Organizations Accounts and create 
 
 ## How to use
 
-Clone this repo on any folder.
+1. Clone this repo on any folder.
 
-Run this script with one of these options
+2. Set your default variable values on .env file.
+
+3. Run this script with one of these options
 
 ./awsaccountstools.sh OPTION
 
-### OPTIONS:
+OPTIONS:
 * install
 
 Install the AWS Account Tools.
@@ -28,3 +30,7 @@ Switch EKS Cluster.
 * help
 
 Show help.
+
+## After you installed
+
+You can run 
