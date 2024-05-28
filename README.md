@@ -44,7 +44,7 @@ eksswitch
 ```
 List the organization accounts to select one, then list K8s clusters on this account.
 
-> [!NOTE]
+> [!WARNING]
 > After you have installed this tool, you can't move or delete the local repo, because the functions will point to this location, if you move the folder, rerun the installation, to update the path for functions.
 
 ## What does this tool do on your system?
