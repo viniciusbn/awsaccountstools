@@ -11,7 +11,6 @@ This script was designed to auto populate AWS Organizations Accounts and create 
 ```
 ./awsaccountstools.sh OPTION
 ```
-
     * OPTIONS:
         * install
 
@@ -32,6 +31,15 @@ This script was designed to auto populate AWS Organizations Accounts and create 
 
         Show help.
 
-## After you installed
+## After you installed this tool
 
-You can run 
+You can run on any new console these commands
+
+```
+awsswitch
+```
+#Will list the organizations accounts to select one
+```
+eksswitch
+```
+#Will list the organizations accotuns to select one, the list K8s clusters one this account.
