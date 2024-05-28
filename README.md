@@ -8,28 +8,29 @@ This script was designed to auto populate AWS Organizations Accounts and create 
 2. Set your default variable values on .env file.
 
 3. Run this script with one of these options
-
+```
 ./awsaccountstools.sh OPTION
+```
 
-OPTIONS:
-* install
+    * OPTIONS:
+        * install
 
-Install the AWS Account Tools.
-* remove, uninstall
+        Install the AWS Account Tools.
+        * remove, uninstall
 
-Uninstall the AWS Account Tools.
-* refresh, configure
+        Uninstall the AWS Account Tools.
+        * refresh, configure
 
-Configure the AWS Account Tools.
-* awsswitch
+        Configure the AWS Account Tools.
+        * awsswitch
 
-Switch AWS Account.
-* eksswitch
+        Switch AWS Account.
+        * eksswitch
 
-Switch EKS Cluster.
-* help
+        Switch EKS Cluster.
+        * help
 
-Show help.
+        Show help.
 
 ## After you installed
 
