@@ -13,22 +13,22 @@ This script was designed to auto populate AWS Organizations Accounts and create 
 ```
 
 * OPTIONS:
-    * install
+    * install\n
     Install the AWS Account Tools.
 
-    * remove, uninstall
+    * remove, uninstall\n
     Uninstall the AWS Account Tools.
 
-    * refresh, configure
+    * refresh, configure\n
     Configure the AWS Account Tools.
 
-    * awsswitch
+    * awsswitch\n
     Switch AWS Account.
 
-    * eksswitch
+    * eksswitch\n
     Switch EKS Cluster.
 
-    * help
+    * help\n
     Show help.
 
 ## After you installed this tool
