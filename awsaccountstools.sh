@@ -6,10 +6,11 @@
 awsConf=~/.aws/config
 awsDefaultSSORegistrationScopes="sso:account:access"
 # Get the current APP directory
-APP_DIR=$(pwd)
+#APP_DIR=$(pwd)
+APP_DIR=$(dirname "$(realpath "$0")")
 APP_FILE_NAME="$(basename "$0" 2>/dev/null)"
 # Import .env variables
-source ./.env
+source $APP_DIR/.env
 
 # Check if 'jq' is installed.
 checkjq () {
@@ -230,6 +231,23 @@ removeTool () {
         # Uninstall by removing the script alias/function from shell profile.
         sed -i.bak "/^function $ALIAS_NAME() {/,/^}$/d" "$ALIAS_FILE" 
     done
+    echo -e "\nawsaccountstools.sh has been uninstalled.\n"
+}
+
+appHelp () {
+    echo -e "\nAWS SSO Account Tools Help\n"
+    echo -e "Run from local repo directory."
+    echo -e "Usage: ./awsaccountstools.sh [OPTION]"
+    echo -e "Options:\n"
+    echo -e "  install               Install the AWS Account Tools."
+    echo -e "  remove, uninstall     Uninstall the AWS Account Tools."
+    echo -e "  refresh, configure    Configure the AWS Account Tools."
+    echo -e "  awsswitch             Switch AWS Account."
+    echo -e "  eksswitch             Switch EKS Cluster."
+    echo -e "  help                  Show help."
+    echo -e "\n\nAfter installing the AWS Account Tools, you can use it by running the following command, on any new console:\n"
+    echo -e "   awsswitch   Switch AWS Account"
+    echo -e "   eksswitch   Switch EKS Cluster"
 }
 
 #Check for pre-reqs.
@@ -254,13 +272,11 @@ if checkjq && checkAWScli && checkenvfile; then
             ;;
         awsswitch)
             #switch aws accounts
-            echo "Switching AWS Account..."
             checkAWSSSOsession
             selectAWSProfile
             ;;
         eksswitch)
-            #switch eks accounts
-            echo "Switching EKS Cluster..."
+            #switch eks accounts/clusters
             checkAWSSSOsession
             selectAWSProfile
             if [ $? -ne 1 ]; then
@@ -269,10 +285,10 @@ if checkjq && checkAWScli && checkenvfile; then
             ;;
         help)
             #show help
-            echo "AWS Account Tools Help"
+            appHelp
             ;;
         *)
-            echo "Null option or invalid option, check documentation for help."
+            echo 'Null or invalid option, run "./awsaccountstools.sh help" for help.'
             ;;
     esac
 fi
