@@ -11,6 +11,7 @@ This script was designed to auto populate AWS Organizations Accounts and create 
 ```
 ./awsaccountstools.sh OPTION
 ```
+
     * OPTIONS:
         * install
         Install the AWS Account Tools.
