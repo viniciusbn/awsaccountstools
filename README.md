@@ -9,7 +9,7 @@ Run this script with one of these options
 
 ./awsaccountstools.sh OPTION
 
-OPTIONS:
+### OPTIONS:
 * install
 
 Install the AWS Account Tools.
