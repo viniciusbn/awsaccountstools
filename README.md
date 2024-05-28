@@ -6,18 +6,25 @@ This script was designed to auto populate AWS Organizations Accounts and create 
 Clone this repo on any folder.
 
 Run this script with one of these options
+
 ./awsaccountstools.sh OPTION
 
 OPTIONS:
 * install
-Install the AWS Account Tools."
+
+Install the AWS Account Tools.
 * remove, uninstall
-Uninstall the AWS Account Tools."
+
+Uninstall the AWS Account Tools.
 * refresh, configure
-Configure the AWS Account Tools."
+
+Configure the AWS Account Tools.
 * awsswitch
-Switch AWS Account."
+
+Switch AWS Account.
 * eksswitch
-Switch EKS Cluster."
+
+Switch EKS Cluster.
 * help
-Show help."
+
+Show help.
