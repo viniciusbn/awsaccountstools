@@ -44,7 +44,10 @@ eksswitch
 ```
 List the organization accounts to select one, then list K8s clusters on this account.
 
-## What this tool do on your system?
+> [!NOTE]
+> After you have installed this tool, you can't move or delete the local repo, because the functions will point to this location, if you move the folder, rerun the installation, to update the path for functions.
+
+## What does this tool do on your system?
 
 This tool will modify your ~/.aws/config file to add the required sections and populate it with all profile accounts from your organization.
 
