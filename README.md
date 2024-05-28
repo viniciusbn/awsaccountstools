@@ -13,33 +13,32 @@ This script was designed to auto populate AWS Organizations Accounts and create 
 ```
     * OPTIONS:
         * install
-
         Install the AWS Account Tools.
+
         * remove, uninstall
-
         Uninstall the AWS Account Tools.
+
         * refresh, configure
-
         Configure the AWS Account Tools.
+
         * awsswitch
-
         Switch AWS Account.
+
         * eksswitch
-
         Switch EKS Cluster.
-        * help
 
+        * help
         Show help.
 
 ## After you installed this tool
 
-You can run on any new console these commands
+You can run these commands on any new console.
 
 ```
 awsswitch
 ```
-#Will list the organizations accounts to select one
+List the organization accounts to select one.
 ```
 eksswitch
 ```
-#Will list the organizations accotuns to select one, the list K8s clusters one this account.
+List the organization accounts to select one, then list K8s clusters on this account.
