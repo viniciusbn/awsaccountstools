@@ -65,18 +65,21 @@ checkenvfile () {
 }
 
 checkAWSSSOsession () {
-    aws sts get-caller-identity --profile $awsDefaultProfile &> /dev/null
-    if [ $? -eq 0 ]; then
+    if [ -n "$AWS_PROFILE" ]; then
+        checkssoProfile=$AWS_PROFILE
+    else
+        checkssoProfile=$awsDefaultProfile
+    fi
+    if aws sts get-caller-identity --profile $checkssoProfile &> /dev/null; then
         return 0
     else
         echo -e "\033[0;33m"
-        echo -e "The SSO session for profile $awsDefaultProfile is not connected."
         echo -e "Connecting....."
         echo -e "\033[0m"
-        aws sso login --profile $awsDefaultProfile
+        aws sso login --profile $checkssoProfile
         if [ $? -eq 255 ]; then
             configureAWSFirstConnect
-            aws sso login --profile $awsDefaultProfile
+            aws sso login --profile $checkssoProfile
             createAWSprofiles
         fi
     fi
@@ -150,6 +153,7 @@ selectAWSProfile () {
                 echo -e "\nSelected profile: $profile\n"
                 echo -e "Programmatic credentials for profile $profile are defined.\n"
                 export AWS_PROFILE=$profile
+                checkAWSSSOsession
                 #Get AWS programmatic credentials for CLI.
                 eval "$(aws configure export-credentials --profile $profile --format env)"
                 break 2
@@ -196,7 +200,7 @@ installTool () {
             ALIAS_FILE=~/.profile
             ;;
     esac
-    echo -e "$ALIAS_APP_NAME" | while read -r ALIAS_NAME; do
+    echo -e "$ALIASES_APP_NAME" | while read -r ALIAS_NAME; do
         # Check if the alias/function already exists in the alias file.
         if grep -q "function $ALIAS_NAME" $ALIAS_FILE 2>/dev/null; then
             # Update the alias/function if it exists.
@@ -227,7 +231,7 @@ removeTool () {
             ALIAS_FILE=~/.profile
             ;;
     esac
-    echo -e "$ALIAS_APP_NAME" | while read -r ALIAS_NAME; do
+    echo -e "$ALIASES_APP_NAME" | while read -r ALIAS_NAME; do
         # Uninstall by removing the script alias/function from shell profile.
         sed -i.bak "/^function $ALIAS_NAME() {/,/^}$/d" "$ALIAS_FILE" 
     done
