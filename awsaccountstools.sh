@@ -178,7 +178,8 @@ selectEKScluster () {
                 break
             else
                 echo -e "\nSelected eks: $eks_cluster\nConnecting...\n"
-                aws eks update-kubeconfig --name $eks_cluster
+                export KUBECONFIG=~/.kube/config-$AWS_PROFILE-$eks_cluster
+                aws eks update-kubeconfig --name $eks_cluster --profile $AWS_PROFILE --kubeconfig $KUBECONFIG
                 break
             fi
         done
