@@ -6,8 +6,11 @@
 awsConf=~/.aws/config
 awsDefaultSSORegistrationScopes="sso:account:access"
 # Get the current APP directory
-#APP_DIR=$(pwd)
-APP_DIR=$(dirname "$(realpath "$0")")
+if [ -n "$BASH_VERSION" ]; then
+  APP_DIR=$(dirname "$(realpath "$BASH_SOURCE")")
+else
+  APP_DIR=$(dirname "$(realpath "$0")")
+fi
 APP_FILE_NAME="$(basename "$0" 2>/dev/null)"
 # Import .env variables
 source $APP_DIR/.env
