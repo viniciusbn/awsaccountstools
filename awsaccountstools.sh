@@ -156,6 +156,8 @@ selectAWSProfile () {
                 echo -e "\nSelected profile: $profile\n"
                 echo -e "Programmatic credentials for profile $profile are defined.\n"
                 export AWS_PROFILE=$profile
+                # Set the prompt with the profile name
+                export RPROMPT='%{$fg[blue]%}(AWS: $profile)%{$reset_color%}'
                 checkAWSSSOsession
                 #Get AWS programmatic credentials for CLI.
                 eval "$(aws configure export-credentials --profile $profile --format env)"
@@ -182,6 +184,8 @@ selectEKScluster () {
             else
                 echo -e "\nSelected eks: $eks_cluster\nConnecting...\n"
                 export KUBECONFIG=~/.kube/config-$AWS_PROFILE-$eks_cluster
+                # Set the prompt to show the selected EKS cluster.
+                export RPROMPT='%{$fg[blue]%}(EKS: $eks_cluster)%{$reset_color%}'
                 aws eks update-kubeconfig --name $eks_cluster --profile $AWS_PROFILE --kubeconfig $KUBECONFIG
                 break
             fi
