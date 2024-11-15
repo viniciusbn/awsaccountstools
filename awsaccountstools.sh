@@ -145,6 +145,7 @@ selectAWSProfile () {
                 unset AWS_SECRET_ACCESS_KEY
                 unset AWS_SESSION_TOKEN
                 unset AWS_CREDENTIAL_EXPIRATION
+                unset RPROMPT
                 echo -e "\nCleared... Session profile and credentials was unset.\n"
                 return 1
                 break 2
