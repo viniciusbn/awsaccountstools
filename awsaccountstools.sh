@@ -168,29 +168,50 @@ selectAWSProfile () {
     done
 }
 
+configureEKSconnection() {
+    EKS_CLUSTER="$1"
+    echo -e "\nSelected eks: $EKS_CLUSTER\nConnecting...\n"
+    export KUBECONFIG=~/.kube/config-$AWS_PROFILE-$EKS_CLUSTER
+    export RPROMPT='%{$fg[blue]%}(EKS: $EKS_CLUSTER)%{$reset_color%}'
+    aws eks update-kubeconfig --name "$EKS_CLUSTER" --profile "$AWS_PROFILE" --kubeconfig "$KUBECONFIG"
+}
+
 selectEKScluster () {
     if [ -z "$AWS_PROFILE" ]; then
         echo -e "\n\nNone profile selected.\n\n"
+        return 1
     else
         # Get the profile list, including 'Exit'
-        eks_clusters=("Exit" $(aws eks list-clusters --profile $AWS_PROFILE --query "clusters[]" --output json | jq -r '.[]'))
-        PS3="Select the EKS Cluster to use or 1 to 'Exit': "
-        echo -e "\nSelec the EKS Cluster:\n"
-        # Display the list of profiles
-        select eks_cluster in "${eks_clusters[@]}"
-        do
-            if [[ $eks_cluster == "Exit" ]]; then
-                echo -e "\nExiting...\n"
-                break
-            else
-                echo -e "\nSelected eks: $eks_cluster\nConnecting...\n"
-                export KUBECONFIG=~/.kube/config-$AWS_PROFILE-$eks_cluster
-                # Set the prompt to show the selected EKS cluster.
-                export RPROMPT='%{$fg[blue]%}(EKS: $eks_cluster)%{$reset_color%}'
-                aws eks update-kubeconfig --name $eks_cluster --profile $AWS_PROFILE --kubeconfig $KUBECONFIG
-                break
-            fi
-        done
+        local EKS_CLUSTERS=$(aws eks list-clusters --profile $AWS_PROFILE --query "clusters[]" --output json | jq -r '.[]')
+        
+        # Count the number of elements in the array
+        if [ -z "$EKS_CLUSTERS" ]; then
+            echo -e "No EKS clusters found.\n"
+            return 1
+        fi
+        local CLUSTERS_COUNT=$(echo -e "$EKS_CLUSTERS" | wc -l)
+
+        # Check if the array is empty
+        if [ $CLUSTERS_COUNT -eq 1 ]; then
+            echo -e "\nUnique EKS cluster found: $EKS_CLUSTERS\n"
+            configureEKSconnection $EKS_CLUSTERS
+            return 0
+        else
+            EKS_CLUSTERS=("Exit" $(echo "$EKS_CLUSTERS"))
+            PS3="Select the EKS Cluster to use or 1 to 'Exit': "
+            echo -e "\nSelect the EKS Cluster:\n"
+            # Display the list of profiles
+            select eks_cluster in "${EKS_CLUSTERS[@]}"
+            do
+                if [[ $eks_cluster == "Exit" ]]; then
+                    echo -e "\nExiting...\n"
+                    break
+                else
+                    configureEKSconnection $eks_cluster
+                    break
+                fi
+            done
+        fi
     fi
 }
 
