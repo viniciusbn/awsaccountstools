@@ -156,7 +156,10 @@ selectAWSProfile () {
             else
                 echo -e "\nSelected profile: $profile\n"
                 echo -e "Programmatic credentials for profile $profile are defined.\n"
+                # Set the AWS_PROFILE environment variable.
                 export AWS_PROFILE=$profile
+                # Set default AWS profile for backward compatibility.
+                export PROFILE=$profile
                 # Set the prompt with the profile name
                 export RPROMPT='%{$fg[blue]%}(AWS: $profile)%{$reset_color%}'
                 checkAWSSSOsession
