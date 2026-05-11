@@ -378,6 +378,39 @@ readMenuKey () {
     printf '%s' "$key"
 }
 
+resolveGumBinary () {
+    if [ -x "$APP_DIR/bin/gum" ]; then
+        echo "$APP_DIR/bin/gum"
+        return 0
+    fi
+
+    if command -v gum >/dev/null 2>&1; then
+        command -v gum
+        return 0
+    fi
+
+    return 1
+}
+
+selectFromMenuGum () {
+    local title="$1"
+    shift
+    local options=("$@")
+    local gumBin
+    local selected
+
+    gumBin=$(resolveGumBinary) || return 1
+    # Pass options as args and redirect stdin from /dev/tty so gum can render
+    # its TUI and read keyboard input even when called inside $(...) capture.
+    selected=$("$gumBin" choose --header "$title" --cursor "> " --height 18 "${options[@]}" </dev/tty)
+    if [ $? -ne 0 ] || [ -z "$selected" ]; then
+        return 1
+    fi
+
+    echo "$selected"
+    return 0
+}
+
 selectFromMenuNative () {
     local title="$1"
     shift
@@ -456,6 +489,37 @@ selectFromMenuNative () {
     done
 }
 
+selectFromMenu () {
+    local title="$1"
+    shift
+    local options=("$@")
+    local backend="${AWS_MENU_BACKEND:-auto}"
+
+    if [ ${#options[@]} -eq 0 ]; then
+        return 1
+    fi
+
+    case "$backend" in
+        gum)
+            if selectFromMenuGum "$title" "${options[@]}"; then
+                return 0
+            fi
+            echo -e "\033[0;33m"
+            echo -e "Warning: AWS_MENU_BACKEND=gum was set, but gum is unavailable. Falling back to native menu.\n"
+            echo -e "\033[0m"
+            ;;
+        auto)
+            if resolveGumBinary >/dev/null 2>&1; then
+                if selectFromMenuGum "$title" "${options[@]}"; then
+                    return 0
+                fi
+            fi
+            ;;
+    esac
+
+    selectFromMenuNative "$title" "${options[@]}"
+}
+
 selectAWSProfile () {
     local accounts
     local accountOptions=()
@@ -499,7 +563,7 @@ selectAWSProfile () {
             accountOptions+=("$accountName ($accountId)")
         done
 
-        accountChoice=$(selectFromMenuNative "Select an AWS account:" "${accountOptions[@]}")
+        accountChoice=$(selectFromMenu "Select an AWS account:" "${accountOptions[@]}")
         if [ -z "$accountChoice" ]; then
             return 1
         fi
@@ -559,7 +623,7 @@ selectAWSProfile () {
             echo -e "\nUnique role found for '$accountName': $selectedRole\n"
         else
             roleOptions+=("Exit")
-            selectedRole=$(selectFromMenuNative "Select the role for account '$accountName':" "${roleOptions[@]}")
+            selectedRole=$(selectFromMenu "Select the role for account '$accountName':" "${roleOptions[@]}")
             if [ -z "$selectedRole" ] || [ "$selectedRole" = "Exit" ]; then
                 continue
             fi
@@ -628,7 +692,7 @@ selectEKScluster () {
             done <<< "$EKS_CLUSTERS"
 
             local selectedCluster
-            selectedCluster=$(selectFromMenuNative "Select the EKS Cluster:" "${clusterOptions[@]}")
+            selectedCluster=$(selectFromMenu "Select the EKS Cluster:" "${clusterOptions[@]}")
             if [ -z "$selectedCluster" ] || [ "$selectedCluster" = "Exit" ]; then
                 echo -e "\nExiting...\n"
                 return 1
@@ -695,6 +759,125 @@ installTool () {
     echo -e "\nReload your shell profile using the command: source $ALIAS_FILE or open a new console\n"
 }
 
+installGumBinary () {
+    local gumBin
+    local osName
+    local archName
+    local platform
+    local version
+    local fileName
+    local downloadUrl
+    local tmpDir
+    local tarPath
+    local downloader
+    local extractedGum
+
+    gumBin=$(resolveGumBinary)
+    if [ -n "$gumBin" ]; then
+        echo "gum is already available: $gumBin"
+        return 0
+    fi
+
+    osName=$(uname -s)
+    archName=$(uname -m)
+
+    case "$osName" in
+        Linux)
+            platform="Linux"
+            ;;
+        Darwin)
+            platform="Darwin"
+            ;;
+        *)
+            echo -e "\033[0;33m"
+            echo -e "Unsupported OS for automatic gum install: $osName\n"
+            echo -e "\033[0m"
+            return 1
+            ;;
+    esac
+
+    case "$archName" in
+        x86_64|amd64)
+            archName="x86_64"
+            ;;
+        aarch64|arm64)
+            archName="arm64"
+            ;;
+        *)
+            echo -e "\033[0;33m"
+            echo -e "Unsupported CPU architecture for automatic gum install: $archName\n"
+            echo -e "\033[0m"
+            return 1
+            ;;
+    esac
+
+    version="$GUM_VERSION"
+    if [ -z "$version" ]; then
+        if command -v curl >/dev/null 2>&1; then
+            version=$(curl -fsSL "https://api.github.com/repos/charmbracelet/gum/releases/latest" 2>/dev/null | jq -r '.tag_name // empty' | sed 's/^v//')
+        elif command -v wget >/dev/null 2>&1; then
+            version=$(wget -qO- "https://api.github.com/repos/charmbracelet/gum/releases/latest" 2>/dev/null | jq -r '.tag_name // empty' | sed 's/^v//')
+        fi
+    fi
+
+    if [ -z "$version" ]; then
+        version="0.14.5"
+    fi
+
+    fileName="gum_${version}_${platform}_${archName}.tar.gz"
+    downloadUrl="https://github.com/charmbracelet/gum/releases/download/v${version}/${fileName}"
+
+    mkdir -p "$APP_DIR/bin"
+    tmpDir=$(mktemp -d)
+    tarPath="$tmpDir/$fileName"
+
+    if command -v curl >/dev/null 2>&1; then
+        downloader="curl"
+        curl -fsSL "$downloadUrl" -o "$tarPath"
+    elif command -v wget >/dev/null 2>&1; then
+        downloader="wget"
+        wget -q "$downloadUrl" -O "$tarPath"
+    else
+        rm -rf "$tmpDir"
+        echo -e "\033[0;33m"
+        echo -e "curl or wget is required to download gum automatically.\n"
+        echo -e "\033[0m"
+        return 1
+    fi
+
+    if [ $? -ne 0 ] || [ ! -f "$tarPath" ]; then
+        rm -rf "$tmpDir"
+        echo -e "\033[0;33m"
+        echo -e "Failed to download gum (${version}) using ${downloader}.\n"
+        echo -e "\033[0m"
+        return 1
+    fi
+
+    if ! tar -xzf "$tarPath" -C "$tmpDir"; then
+        rm -rf "$tmpDir"
+        echo -e "\033[0;33m"
+        echo -e "Failed to extract gum archive.\n"
+        echo -e "\033[0m"
+        return 1
+    fi
+
+    extractedGum=$(find "$tmpDir" -type f -name gum 2>/dev/null | head -n 1)
+    if [ -z "$extractedGum" ]; then
+        rm -rf "$tmpDir"
+        echo -e "\033[0;33m"
+        echo -e "Extracted archive does not contain gum binary.\n"
+        echo -e "\033[0m"
+        return 1
+    fi
+
+    cp "$extractedGum" "$APP_DIR/bin/gum"
+    chmod +x "$APP_DIR/bin/gum"
+    rm -rf "$tmpDir"
+
+    echo -e "\nInstalled gum successfully at: $APP_DIR/bin/gum\n"
+    return 0
+}
+
 removeTool () {
     ALIASES_APP_NAME="awsswitch\neksswitch"
     local shellFiles=("$HOME/.zprofile" "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.profile")
@@ -722,6 +905,7 @@ appHelp () {
     echo -e "Usage: ./awsaccountstools.sh [OPTION]"
     echo -e "Options:\n"
     echo -e "  install               Install the AWS Account Tools."
+    echo -e "  install-gum           Install local gum binary (modern menu UI)."
     echo -e "  remove, uninstall     Uninstall the AWS Account Tools."
     echo -e "  refresh, configure    Configure the AWS Account Tools."
     echo -e "  awsswitch             Switch AWS Account."
@@ -730,6 +914,9 @@ appHelp () {
     echo -e "\n\nAfter installing the AWS Account Tools, you can use it by running the following command, on any new console:\n"
     echo -e "   awsswitch   Switch AWS Account"
     echo -e "   eksswitch   Switch EKS Cluster"
+    echo -e "\nOptional menu backend:"
+    echo -e "   Put gum in $APP_DIR/bin/gum (or install gum in PATH) for a modern menu UI."
+    echo -e "   Set AWS_MENU_BACKEND=gum to force it, or keep auto fallback to native menu."
 }
 
 abortCommand () {
@@ -737,6 +924,10 @@ abortCommand () {
 }
 
 case $1 in
+    install-gum)
+        echo "Installing gum for modern menus..."
+        installGumBinary
+        ;;
     remove|uninstall)
         # uninstall should work even when env/aws/jq checks fail
         echo "Uninstalling AWS Account Tools..."
@@ -751,6 +942,7 @@ case $1 in
                 install)
                     #install script
                     echo "Installing AWS Account Tools..."
+                    installGumBinary || true
                     installTool
                     ;;
                 refresh|configure)
