@@ -56,52 +56,52 @@ promptValueOrDefault () {
     fi
 }
 
+promptRequiredValue () {
+    local label="$1"
+    local defaultValue="$2"
+    local typedValue
+
+    while true; do
+        read -r -p "$label [$defaultValue]: " typedValue
+        if [ -n "$typedValue" ]; then
+            echo "$typedValue"
+            return 0
+        fi
+        if [ -n "$defaultValue" ]; then
+            echo "$defaultValue"
+            return 0
+        fi
+        echo "This field is required."
+    done
+}
+
 bootstrapEnvLocalFromTemplate () {
-    local answer
     local startURL
     local defaultSession
-    local defaultProfile
-    local defaultProfileAccountId
-    local defaultRole
     local defaultRegion
 
     if [ -f "$APP_DIR/.env.local" ]; then
         return 0
     fi
 
-    if [ ! -f "$APP_DIR/.env" ]; then
-        return 1
-    fi
-
     if [ ! -t 0 ]; then
         echo -e "\033[0;33m"
-        echo -e "No .env.local found. Run this script in an interactive shell once to generate it from .env.\n"
+        echo -e "No .env.local found. Open an interactive shell to create it automatically.\n"
         echo -e "\033[0m"
         return 1
     fi
 
     echo -e "\nNo .env.local was found."
-    read -r -p "Generate .env.local from .env template now? [Y/n]: " answer
-    case "$answer" in
-        n|N|no|NO)
-            return 1
-            ;;
-    esac
+    echo -e "Creating .env.local and prompting required values...\n"
 
-    startURL=$(promptValueOrDefault "awsStartURL" "$(getTemplateValue "awsStartURL" "$awsStartURL")")
-    defaultSession=$(promptValueOrDefault "awsDefaultSession" "$(getTemplateValue "awsDefaultSession" "$awsDefaultSession")")
-    defaultProfile=$(promptValueOrDefault "awsDefaultProfile" "$(getTemplateValue "awsDefaultProfile" "$awsDefaultProfile")")
-    defaultProfileAccountId=$(promptValueOrDefault "awsDefaultProfileAccountId" "$(getTemplateValue "awsDefaultProfileAccountId" "$awsDefaultProfileAccountId")")
-    defaultRole=$(promptValueOrDefault "awsDefaultSSORole" "$(getTemplateValue "awsDefaultSSORole" "$awsDefaultSSORole")")
-    defaultRegion=$(promptValueOrDefault "awsDefaultRegion" "$(getTemplateValue "awsDefaultRegion" "$awsDefaultRegion")")
+    startURL=$(promptRequiredValue "awsStartURL" "$(getTemplateValue "awsStartURL" "$awsStartURL")")
+    defaultSession=$(promptRequiredValue "awsDefaultSession" "$(getTemplateValue "awsDefaultSession" "$awsDefaultSession")")
+    defaultRegion=$(promptRequiredValue "awsDefaultRegion" "$(getTemplateValue "awsDefaultRegion" "$awsDefaultRegion")")
 
     cat > "$APP_DIR/.env.local" <<EOF
 # Local runtime configuration. Keep this file out of version control.
 awsStartURL="$startURL"
 awsDefaultSession="$defaultSession"
-awsDefaultProfile="$defaultProfile"
-awsDefaultProfileAccountId="$defaultProfileAccountId"
-awsDefaultSSORole="$defaultRole"
 awsDefaultRegion="$defaultRegion"
 EOF
 
@@ -139,6 +139,32 @@ buildProfileName () {
     echo "${accountSlug}-${roleSlug}"
 }
 
+isSSOTokenValid () {
+    local cacheDir="$HOME/.aws/sso/cache"
+    local expiresAt
+    local now
+
+    if [ ! -d "$cacheDir" ]; then
+        return 1
+    fi
+
+    expiresAt=$(jq -rs \
+        --arg startUrl "$awsStartURL" \
+        'map(select((.startUrl == $startUrl or .startURL == $startUrl) and .accessToken)) | sort_by(.expiresAt // "") | reverse | .[0].expiresAt // empty' \
+        "$cacheDir"/*.json 2>/dev/null)
+
+    if [ -z "$expiresAt" ] || [ "$expiresAt" = "null" ]; then
+        return 1
+    fi
+
+    now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    if [[ "$expiresAt" > "$now" ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
 getSSOAccessToken () {
     local cacheDir="$HOME/.aws/sso/cache"
     local token
@@ -173,27 +199,6 @@ listAccessibleAccounts () {
         fi
     fi
 
-    # Fallback to Organizations API
-    if [ -n "$awsDefaultProfile" ]; then
-        result=$(aws organizations list-accounts --profile "$awsDefaultProfile" --output json 2>&1)
-        if [ $? -eq 0 ]; then
-            echo "$result" | jq -r '.Accounts[]? | select(.Status == "ACTIVE") | "\(.Id)|\(.Name)"' | sort -t'|' -k2
-            return 0
-        else
-            {
-                echo -e "\033[0;33m"
-                echo -e "Warning: Could not fetch accounts from AWS Organizations.\n"
-                echo -e "Possible causes:\n"
-                echo -e "  1. AWS CLI is not installed or not in PATH\n"
-                echo -e "  2. SSO session expired - run: aws sso login --profile $awsDefaultProfile\n"
-                echo -e "  3. Profile '$awsDefaultProfile' is not configured in ~/.aws/config\n"
-                echo -e "  4. Your user lacks Organizations:ListAccounts permission\n"
-                echo -e "\033[0m"
-            } >&2
-            return 1
-        fi
-    fi
-
     return 1
 }
 
@@ -209,7 +214,7 @@ listAccountRoles () {
         return 0
     fi
 
-    echo "$awsDefaultSSORole"
+    return 1
 }
 
 createProfileIfMissing () {
@@ -266,7 +271,7 @@ checkAWScli () {
 
 # Check if .env file exists.
 checkenvfile () {
-    if [ ! -f "$APP_DIR/.env.local" ] && [ -f "$APP_DIR/.env" ]; then
+    if [ ! -f "$APP_DIR/.env.local" ]; then
         bootstrapEnvLocalFromTemplate
         loadEnvFile
     fi
@@ -274,7 +279,7 @@ checkenvfile () {
     setEnvFile
 
     if [ -f "$ENV_FILE" ]; then
-        if [[ -n "$awsStartURL" && -n "$awsDefaultSession" && -n "$awsDefaultProfile" && -n "$awsDefaultSSORole" && -n "$awsDefaultRegion" ]]; then
+        if [[ -n "$awsStartURL" && -n "$awsDefaultSession" && -n "$awsDefaultRegion" ]]; then
             return 0
         else
             echo -e "\033[0;33m"
@@ -282,10 +287,7 @@ checkenvfile () {
             echo -e "You must set the variables in the env file: $ENV_FILE\n"
             echo -e "awsStartURL=$awsStartURL"
             echo -e "awsDefaultSession=$awsDefaultSession"
-            echo -e "awsDefaultProfile=$awsDefaultProfile"
-            echo -e "awsDefaultSSORole=$awsDefaultSSORole"
             echo -e "awsDefaultRegion=$awsDefaultRegion"
-            echo -e "awsDefaultProfileAccountId=$awsDefaultProfileAccountId"
             echo -e "\033[0m"
             return 1
         fi
@@ -299,60 +301,40 @@ checkenvfile () {
 
 checkAWSSSOsession () {
     ensureAWSConfigFile
+    configureAWSFirstConnect
 
-    if [ -n "$AWS_PROFILE" ]; then
-        checkssoProfile=$AWS_PROFILE
-    else
-        checkssoProfile=$awsDefaultProfile
-    fi
-
-    # Recreate base entries when ~/.aws/config was reset or is incomplete.
-    if ! grep -q "\[sso-session $awsDefaultSession\]" "$awsConf" 2>/dev/null || ! grep -q "\[profile $checkssoProfile\]" "$awsConf" 2>/dev/null; then
-        configureAWSFirstConnect
-    fi
-
-    if aws sts get-caller-identity --profile "$checkssoProfile" &> /dev/null; then
+    if isSSOTokenValid; then
         return 0
-    else
-        echo -e "\033[0;33m"
-        echo -e "SSO session for profile '$checkssoProfile' is not active or expired.\n"
-        echo -e "Attempting to authenticate...\n"
-        echo -e "\033[0m"
-        aws sso login --profile "$checkssoProfile"
-        if [ $? -eq 255 ]; then
-            echo -e "\033[0;33m"
-            echo -e "Could not authenticate. Please ensure:\n"
-            echo -e "  1. AWS SSO is configured in ~/.aws/config\n"
-            echo -e "  2. Profile '$checkssoProfile' exists\n"
-            echo -e "  3. You have internet connectivity\n"
-            echo -e "\033[0m"
-            return 1
-        fi
-        createAWSprofiles
     fi
+
+    echo -e "\033[0;33m"
+    echo -e "SSO session '$awsDefaultSession' is not active or expired.\n"
+    echo -e "Attempting to authenticate...\n"
+    echo -e "\033[0m"
+    aws sso login --sso-session "$awsDefaultSession"
+    if [ $? -ne 0 ]; then
+        echo -e "\033[0;33m"
+        echo -e "Could not authenticate. Please ensure:\n"
+        echo -e "  1. AWS SSO session '$awsDefaultSession' is configured in ~/.aws/config\n"
+        echo -e "  2. You have internet connectivity\n"
+        echo -e "\033[0m"
+        return 1
+    fi
+    createAWSprofiles
 }
 
 configureAWSFirstConnect () {
     ensureAWSConfigFile
 
-    if ! grep -q "\[sso-session $awsDefaultSession\]" "$awsConf" || ! grep -q "\[profile $awsDefaultProfile\]" "$awsConf"; then
-        echo -n > "$awsConf.tmp"
-        if ! grep -q "\[sso-session $awsDefaultSession\]" "$awsConf"; then
-            echo -e "\n[sso-session $awsDefaultSession]" >> "$awsConf.tmp"
-            echo "sso_start_url = $awsStartURL" >> "$awsConf.tmp"
-            echo "sso_region = $awsDefaultRegion" >> "$awsConf.tmp"
-            echo "sso_registration_scopes = $awsDefaultSSORegistrationScopes" >> "$awsConf.tmp"
-            echo -e "\nThe required SSO session was created $awsDefaultSession.\n"
-        fi
-        if ! grep -q "\[profile $awsDefaultProfile\]" "$awsConf"; then
-            echo -e "\n[profile $awsDefaultProfile]" >> "$awsConf.tmp"
-            echo "sso_session = $awsDefaultSession" >> "$awsConf.tmp"
-            echo "sso_account_id = $awsDefaultProfileAccountId" >> "$awsConf.tmp"
-            echo "sso_role_name = $awsDefaultSSORole" >> "$awsConf.tmp"
-            echo "region = $awsDefaultRegion" >> "$awsConf.tmp"
-            echo -e "\nThe required profile was created $awsDefaultProfile.\n"
-        fi
-        cat "$awsConf.tmp" >> "$awsConf" && rm "$awsConf.tmp"
+    if ! grep -q "\[sso-session $awsDefaultSession\]" "$awsConf" 2>/dev/null; then
+        {
+            echo ""
+            echo "[sso-session $awsDefaultSession]"
+            echo "sso_start_url = $awsStartURL"
+            echo "sso_region = $awsDefaultRegion"
+            echo "sso_registration_scopes = $awsDefaultSSORegistrationScopes"
+        } >> "$awsConf"
+        echo -e "\nSSO session configured: $awsDefaultSession.\n"
         stripEmptyLines "$awsConf"
     fi
 }
@@ -375,10 +357,6 @@ createAWSprofiles () {
         accountId=$(echo "$accountEntry" | cut -d'|' -f1)
         accountName=$(echo "$accountEntry" | cut -d'|' -f2-)
         roles=$(listAccountRoles "$accountId")
-
-        if [ -z "$roles" ]; then
-            roles="$awsDefaultSSORole"
-        fi
 
         while IFS= read -r roleName; do
             [ -z "$roleName" ] && continue
@@ -499,12 +477,12 @@ selectAWSProfile () {
         done < <(listAccessibleAccounts)
         
         if [ ${#accountMap[@]} -eq 0 ]; then
-            if [ $loginAttempts -eq 0 ] && [ -n "$awsDefaultProfile" ]; then
+            if [ $loginAttempts -eq 0 ]; then
                 loginAttempts=$((loginAttempts + 1))
                 echo -e "\033[0;33m"
                 echo -e "No accessible accounts found. Attempting SSO login...\n"
                 echo -e "\033[0m"
-                aws sso login --profile "$awsDefaultProfile"
+                aws sso login --sso-session "$awsDefaultSession"
                 if [ $? -eq 0 ]; then
                     echo -e "\nSSO login successful. Retrying account list...\n"
                     continue
@@ -572,7 +550,8 @@ selectAWSProfile () {
             [ -n "$line" ] && roleOptions+=("$line")
         done < <(listAccountRoles "$accountId")
         if [ ${#roleOptions[@]} -eq 0 ]; then
-            roleOptions=("$awsDefaultSSORole")
+            echo -e "\nNo roles found for account '$accountName'. Skipping.\n"
+            continue
         fi
 
         if [ ${#roleOptions[@]} -eq 1 ]; then
