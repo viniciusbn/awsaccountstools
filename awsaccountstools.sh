@@ -305,6 +305,10 @@ checkenvfile () {
 checkAWSSSOsession () {
     ensureAWSConfigFile
     configureAWSFirstConnect
+    local refreshStarted
+    local refreshFinished
+    local refreshDuration
+    local refreshRc
 
     if isSSOTokenValid; then
         return 0
@@ -318,7 +322,20 @@ checkAWSSSOsession () {
         msgWarn "  2. You have internet connectivity"
         return 1
     fi
+
+    msgInfo "Refreshing AWS account/role profiles from SSO (first run may take longer)..."
+    refreshStarted=$(date +%s)
     createAWSprofiles
+    refreshRc=$?
+    refreshFinished=$(date +%s)
+    refreshDuration=$((refreshFinished - refreshStarted))
+
+    if [ $refreshRc -eq 0 ]; then
+        msgSuccess "Profile refresh completed in ${refreshDuration}s."
+    else
+        msgWarn "Profile refresh finished with warnings in ${refreshDuration}s."
+    fi
+    return $refreshRc
 }
 
 configureAWSFirstConnect () {
@@ -571,12 +588,19 @@ selectAWSProfile () {
     local selectedRole
     local profile
     local loginAttempts=0
+    local accountsLoadStarted
+    local accountsLoadFinished
+    local accountsLoadDuration
 
     while true; do
+        msgInfo "Loading accessible AWS accounts..."
+        accountsLoadStarted=$(date +%s)
         accountMap=()
         while IFS= read -r line; do
             [ -n "$line" ] && accountMap+=("$line")
         done < <(listAccessibleAccounts)
+        accountsLoadFinished=$(date +%s)
+        accountsLoadDuration=$((accountsLoadFinished - accountsLoadStarted))
         
         if [ ${#accountMap[@]} -eq 0 ]; then
             if [ $loginAttempts -eq 0 ]; then
@@ -591,6 +615,8 @@ selectAWSProfile () {
             msgError "No accessible accounts found."
             return 1
         fi
+
+        msgSuccess "Loaded ${#accountMap[@]} accounts in ${accountsLoadDuration}s."
 
         accountOptions=("Exit" "Clear" "Refresh")
         for selectedAccount in "${accountMap[@]}"; do
