@@ -59,7 +59,22 @@ promptValueOrDefault () {
 promptRequiredValue () {
     local label="$1"
     local defaultValue="$2"
+    local _gum
     local typedValue
+
+    _gum=$(resolveGumBinary 2>/dev/null)
+    if [ -n "$_gum" ]; then
+        typedValue=$("$_gum" input \
+            --header "$label" \
+            --value "$defaultValue" \
+            --placeholder "${defaultValue:-required}" \
+            --prompt "> " </dev/tty)
+        if [ -n "$typedValue" ]; then
+            echo "$typedValue"
+            return 0
+        fi
+        [ -n "$defaultValue" ] && echo "$defaultValue" && return 0
+    fi
 
     while true; do
         read -r -p "$label [$defaultValue]: " typedValue
@@ -71,7 +86,7 @@ promptRequiredValue () {
             echo "$defaultValue"
             return 0
         fi
-        echo "This field is required."
+        echo "This field is required." >&2
     done
 }
 
@@ -85,14 +100,11 @@ bootstrapEnvLocalFromTemplate () {
     fi
 
     if [ ! -t 0 ]; then
-        echo -e "\033[0;33m"
-        echo -e "No .env.local found. Open an interactive shell to create it automatically.\n"
-        echo -e "\033[0m"
+        msgWarn "No .env.local found. Open an interactive shell to create it automatically."
         return 1
     fi
 
-    echo -e "\nNo .env.local was found."
-    echo -e "Creating .env.local and prompting required values...\n"
+    msgWarn "No .env.local was found. Creating .env.local now..."
 
     startURL=$(promptRequiredValue "awsStartURL" "$(getTemplateValue "awsStartURL" "$awsStartURL")")
     defaultSession=$(promptRequiredValue "awsDefaultSession" "$(getTemplateValue "awsDefaultSession" "$awsDefaultSession")")
@@ -106,7 +118,7 @@ awsDefaultRegion="$defaultRegion"
 EOF
 
     chmod 600 "$APP_DIR/.env.local" 2>/dev/null
-    echo -e "\nCreated .env.local successfully.\n"
+    msgSuccess "Created .env.local successfully."
 
     loadEnvFile
     return 0
@@ -233,7 +245,7 @@ createProfileIfMissing () {
             echo "sso_role_name = $roleName"
             echo "region = $awsDefaultRegion"
         } >> "$awsConf"
-        echo "New account/role profile added: $profileName"
+        msgInfo "Profile added: $profileName"
         stripEmptyLines "$awsConf"
     fi
 }
@@ -247,9 +259,7 @@ ensureAWSConfigFile () {
 checkjq () {
     # Check if 'jq' is not installed (its command is not found in the system).
     if [[ -z $(command -v jq) ]]; then
-        echo -e "\033[0;33m"
-        echo -e "The jq is not installed and is pre-req for this tool.\n"
-        echo -e "\033[0m"
+        msgError "jq is not installed and is a required dependency."
         return 1
     else
         return 0
@@ -260,9 +270,7 @@ checkjq () {
 checkAWScli () {
     # Check if 'jq' is not installed (its command is not found in the system).
     if [[ -z $(command -v aws) ]]; then
-        echo -e "\033[0;33m"
-        echo -e "The AWS CLI is not installed and is pre-req for this tool.\n"
-        echo -e "\033[0m"
+        msgError "AWS CLI is not installed and is a required dependency."
         return 1
     else
         return 0
@@ -282,19 +290,14 @@ checkenvfile () {
         if [[ -n "$awsStartURL" && -n "$awsDefaultSession" && -n "$awsDefaultRegion" ]]; then
             return 0
         else
-            echo -e "\033[0;33m"
-            echo -e "Some of the required variables are not set.\n"
-            echo -e "You must set the variables in the env file: $ENV_FILE\n"
-            echo -e "awsStartURL=$awsStartURL"
-            echo -e "awsDefaultSession=$awsDefaultSession"
-            echo -e "awsDefaultRegion=$awsDefaultRegion"
-            echo -e "\033[0m"
+            msgError "Some required variables are not set in: $ENV_FILE"
+            msgWarn "  awsStartURL=$awsStartURL"
+            msgWarn "  awsDefaultSession=$awsDefaultSession"
+            msgWarn "  awsDefaultRegion=$awsDefaultRegion"
             return 1
         fi
     else
-        echo -e "\033[0;33m"
-        echo -e "You must create a .env.local (recommended) or .env file as described in the README.\n"
-        echo -e "\033[0m"
+        msgError "No .env.local or .env file found. Run the script once interactively to create one."
         return 1
     fi
 }
@@ -307,17 +310,12 @@ checkAWSSSOsession () {
         return 0
     fi
 
-    echo -e "\033[0;33m"
-    echo -e "SSO session '$awsDefaultSession' is not active or expired.\n"
-    echo -e "Attempting to authenticate...\n"
-    echo -e "\033[0m"
+    msgWarn "SSO session '$awsDefaultSession' is not active or expired. Attempting to authenticate..."
     aws sso login --sso-session "$awsDefaultSession"
     if [ $? -ne 0 ]; then
-        echo -e "\033[0;33m"
-        echo -e "Could not authenticate. Please ensure:\n"
-        echo -e "  1. AWS SSO session '$awsDefaultSession' is configured in ~/.aws/config\n"
-        echo -e "  2. You have internet connectivity\n"
-        echo -e "\033[0m"
+        msgError "Could not authenticate. Ensure:"
+        msgWarn "  1. AWS SSO session '$awsDefaultSession' is in ~/.aws/config"
+        msgWarn "  2. You have internet connectivity"
         return 1
     fi
     createAWSprofiles
@@ -334,7 +332,7 @@ configureAWSFirstConnect () {
             echo "sso_region = $awsDefaultRegion"
             echo "sso_registration_scopes = $awsDefaultSSORegistrationScopes"
         } >> "$awsConf"
-        echo -e "\nSSO session configured: $awsDefaultSession.\n"
+        msgSuccess "SSO session configured: $awsDefaultSession."
         stripEmptyLines "$awsConf"
     fi
 }
@@ -349,7 +347,7 @@ createAWSprofiles () {
 
     accounts=$(listAccessibleAccounts)
     if [ -z "$accounts" ]; then
-        echo -e "No AWS accounts available for this SSO session/profile.\n"
+        msgWarn "No AWS accounts available for this SSO session."
         return 1
     fi
 
@@ -390,6 +388,46 @@ resolveGumBinary () {
     fi
 
     return 1
+}
+
+msgInfo () {
+    local _gum
+    _gum=$(resolveGumBinary 2>/dev/null)
+    if [ -n "$_gum" ]; then
+        "$_gum" log -l info -- "$*"
+    else
+        echo "$*"
+    fi
+}
+
+msgWarn () {
+    local _gum
+    _gum=$(resolveGumBinary 2>/dev/null)
+    if [ -n "$_gum" ]; then
+        "$_gum" log -l warn -- "$*"
+    else
+        echo -e "\033[0;33m$*\033[0m"
+    fi
+}
+
+msgError () {
+    local _gum
+    _gum=$(resolveGumBinary 2>/dev/null)
+    if [ -n "$_gum" ]; then
+        "$_gum" log -l error -- "$*"
+    else
+        echo -e "\033[0;31m$*\033[0m"
+    fi
+}
+
+msgSuccess () {
+    local _gum
+    _gum=$(resolveGumBinary 2>/dev/null)
+    if [ -n "$_gum" ]; then
+        "$_gum" log -l info -- "$*"
+    else
+        echo -e "\033[0;32m$*\033[0m"
+    fi
 }
 
 selectFromMenuGum () {
@@ -543,16 +581,14 @@ selectAWSProfile () {
         if [ ${#accountMap[@]} -eq 0 ]; then
             if [ $loginAttempts -eq 0 ]; then
                 loginAttempts=$((loginAttempts + 1))
-                echo -e "\033[0;33m"
-                echo -e "No accessible accounts found. Attempting SSO login...\n"
-                echo -e "\033[0m"
+                msgWarn "No accessible accounts found. Attempting SSO login..."
                 aws sso login --sso-session "$awsDefaultSession"
                 if [ $? -eq 0 ]; then
-                    echo -e "\nSSO login successful. Retrying account list...\n"
+                    msgSuccess "SSO login successful. Retrying account list..."
                     continue
                 fi
             fi
-            echo -e "No accessible accounts found.\n"
+            msgError "No accessible accounts found."
             return 1
         fi
 
@@ -569,7 +605,7 @@ selectAWSProfile () {
         fi
 
         if [[ "$accountChoice" == "Exit" ]]; then
-            echo -e "\nExiting...\n"
+            msgInfo "Exiting..."
             return 1
         elif [[ "$accountChoice" == "Clear" ]]; then
             unset AWS_PROFILE
@@ -582,7 +618,7 @@ selectAWSProfile () {
                 export PS1="$_ORIG_PS1"
                 unset _ORIG_PS1
             fi
-            echo -e "\nCleared... Session profile and credentials were unset.\n"
+            msgSuccess "Cleared. Session profile and credentials unset."
             return 1
         elif [[ "$accountChoice" == "Refresh" ]]; then
             createAWSprofiles
@@ -602,7 +638,7 @@ selectAWSProfile () {
         done <<< "$(printf '%s\n' "${accountMap[@]}")"
 
         if [ -z "$selectedAccount" ]; then
-            echo -e "\nInvalid account selection. Please try again.\n"
+            msgWarn "Invalid account selection. Please try again."
             continue
         fi
 
@@ -614,13 +650,13 @@ selectAWSProfile () {
             [ -n "$line" ] && roleOptions+=("$line")
         done < <(listAccountRoles "$accountId")
         if [ ${#roleOptions[@]} -eq 0 ]; then
-            echo -e "\nNo roles found for account '$accountName'. Skipping.\n"
+            msgWarn "No roles found for account '$accountName'. Skipping."
             continue
         fi
 
         if [ ${#roleOptions[@]} -eq 1 ]; then
             selectedRole=$(printf '%s\n' "${roleOptions[@]}" | head -n 1)
-            echo -e "\nUnique role found for '$accountName': $selectedRole\n"
+            msgInfo "Single role found for '$accountName': $selectedRole"
         else
             roleOptions+=("Exit")
             selectedRole=$(selectFromMenu "Select the role for account '$accountName':" "${roleOptions[@]}")
@@ -636,8 +672,8 @@ selectAWSProfile () {
         profile=$(buildProfileName "$accountName" "$selectedRole")
         createProfileIfMissing "$profile" "$accountId" "$selectedRole"
 
-        echo -e "\nSelected profile: $profile\n"
-        echo -e "Programmatic credentials for profile $profile are defined.\n"
+        msgSuccess "Profile selected: $profile"
+        msgInfo "Programmatic credentials exported."
 
         export AWS_PROFILE="$profile"
         export PROFILE="$profile"
@@ -659,7 +695,7 @@ selectAWSProfile () {
 
 configureEKSconnection() {
     local EKS_CLUSTER="$1"
-    echo -e "\nSelected eks: $EKS_CLUSTER\nConnecting...\n"
+    msgInfo "Connecting to EKS cluster: $EKS_CLUSTER"
     export KUBECONFIG=~/.kube/config-"$AWS_PROFILE"-"$EKS_CLUSTER"
     export RPROMPT='%{$fg[blue]%}(EKS: '$EKS_CLUSTER')%{$reset_color%}'
     aws eks update-kubeconfig --name "$EKS_CLUSTER" --profile "$AWS_PROFILE" --kubeconfig "$KUBECONFIG"
@@ -667,7 +703,7 @@ configureEKSconnection() {
 
 selectEKScluster () {
     if [ -z "$AWS_PROFILE" ]; then
-        echo -e "\n\nNone profile selected.\n\n"
+        msgWarn "No AWS profile selected. Run awsswitch first."
         return 1
     else
         local EKS_CLUSTERS
@@ -675,14 +711,14 @@ selectEKScluster () {
         
         # Count the number of elements in the array
         if [ -z "$EKS_CLUSTERS" ]; then
-            echo -e "No EKS clusters found.\n"
+            msgWarn "No EKS clusters found."
             return 1
         fi
         local CLUSTERS_COUNT=$(echo -e "$EKS_CLUSTERS" | wc -l)
 
         # Check if the array is empty
         if [ "$CLUSTERS_COUNT" -eq 1 ]; then
-            echo -e "\nUnique EKS cluster found: $EKS_CLUSTERS\n"
+            msgInfo "Single EKS cluster found: $EKS_CLUSTERS"
             configureEKSconnection "$EKS_CLUSTERS"
             return 0
         else
@@ -694,7 +730,7 @@ selectEKScluster () {
             local selectedCluster
             selectedCluster=$(selectFromMenu "Select the EKS Cluster:" "${clusterOptions[@]}")
             if [ -z "$selectedCluster" ] || [ "$selectedCluster" = "Exit" ]; then
-                echo -e "\nExiting...\n"
+                msgInfo "Exiting..."
                 return 1
             fi
 
@@ -756,7 +792,7 @@ installTool () {
         fi
     done
     # Reload your shell profile.
-    echo -e "\nReload your shell profile using the command: source $ALIAS_FILE or open a new console\n"
+    msgSuccess "Installed! Reload your shell: source $ALIAS_FILE"
 }
 
 installGumBinary () {
@@ -774,7 +810,7 @@ installGumBinary () {
 
     gumBin=$(resolveGumBinary)
     if [ -n "$gumBin" ]; then
-        echo "gum is already available: $gumBin"
+        msgInfo "gum is already available: $gumBin"
         return 0
     fi
 
@@ -789,9 +825,7 @@ installGumBinary () {
             platform="Darwin"
             ;;
         *)
-            echo -e "\033[0;33m"
-            echo -e "Unsupported OS for automatic gum install: $osName\n"
-            echo -e "\033[0m"
+            msgError "Unsupported OS for automatic gum install: $osName"
             return 1
             ;;
     esac
@@ -804,9 +838,7 @@ installGumBinary () {
             archName="arm64"
             ;;
         *)
-            echo -e "\033[0;33m"
-            echo -e "Unsupported CPU architecture for automatic gum install: $archName\n"
-            echo -e "\033[0m"
+            msgError "Unsupported CPU architecture for automatic gum install: $archName"
             return 1
             ;;
     esac
@@ -839,34 +871,26 @@ installGumBinary () {
         wget -q "$downloadUrl" -O "$tarPath"
     else
         rm -rf "$tmpDir"
-        echo -e "\033[0;33m"
-        echo -e "curl or wget is required to download gum automatically.\n"
-        echo -e "\033[0m"
+        msgError "curl or wget is required to download gum automatically."
         return 1
     fi
 
     if [ $? -ne 0 ] || [ ! -f "$tarPath" ]; then
         rm -rf "$tmpDir"
-        echo -e "\033[0;33m"
-        echo -e "Failed to download gum (${version}) using ${downloader}.\n"
-        echo -e "\033[0m"
+        msgError "Failed to download gum (${version}) using ${downloader}."
         return 1
     fi
 
     if ! tar -xzf "$tarPath" -C "$tmpDir"; then
         rm -rf "$tmpDir"
-        echo -e "\033[0;33m"
-        echo -e "Failed to extract gum archive.\n"
-        echo -e "\033[0m"
+        msgError "Failed to extract gum archive."
         return 1
     fi
 
     extractedGum=$(find "$tmpDir" -type f -name gum 2>/dev/null | head -n 1)
     if [ -z "$extractedGum" ]; then
         rm -rf "$tmpDir"
-        echo -e "\033[0;33m"
-        echo -e "Extracted archive does not contain gum binary.\n"
-        echo -e "\033[0m"
+        msgError "Extracted archive does not contain gum binary."
         return 1
     fi
 
@@ -874,7 +898,7 @@ installGumBinary () {
     chmod +x "$APP_DIR/bin/gum"
     rm -rf "$tmpDir"
 
-    echo -e "\nInstalled gum successfully at: $APP_DIR/bin/gum\n"
+    msgSuccess "Installed gum successfully at: $APP_DIR/bin/gum"
     return 0
 }
 
@@ -896,7 +920,7 @@ removeTool () {
     unset -f awsswitch 2>/dev/null
     unset -f eksswitch 2>/dev/null
 
-    echo -e "\nawsaccountstools.sh has been uninstalled.\n"
+    msgSuccess "awsaccountstools has been uninstalled."
 }
 
 appHelp () {
