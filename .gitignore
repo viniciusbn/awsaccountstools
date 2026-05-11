@@ -2,3 +2,5 @@
 **/.env.local
 **/.env.*.local
 bin/gum
+__pycache__/
+*.pyc
