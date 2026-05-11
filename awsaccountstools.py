@@ -32,6 +32,7 @@ _CP_INFO = 4
 _CP_WARN = 5
 _CP_ERROR = 6
 _CP_HINT = 7
+_DEPRECATED_ENV_KEYS = {"lastClusterRegion", "lastClusterProfile"}
 _STATIC_AWS_REGIONS = {
     "af-south-1",
     "ap-east-1",
@@ -216,6 +217,64 @@ def load_env_config() -> Dict[str, str]:
     data.update(parse_env_file(APP_DIR / ".env"))
     data.update(parse_env_file(APP_DIR / ".env.local"))
     return data
+
+
+def _env_local_path() -> Path:
+    return APP_DIR / ".env.local"
+
+
+def _move_preferred_first(items: List[str], preferred: str) -> List[str]:
+    if not preferred:
+        return list(items)
+    out = list(items)
+    if preferred in out:
+        out.remove(preferred)
+        out.insert(0, preferred)
+    return out
+
+
+def save_last_selection(values: Dict[str, str]) -> None:
+    env_local = _env_local_path()
+    env_local.parent.mkdir(parents=True, exist_ok=True)
+
+    if env_local.exists():
+        lines = env_local.read_text(encoding="utf-8").splitlines()
+    else:
+        lines = ["# Local runtime configuration. Keep this file out of version control."]
+
+    keys_to_set = {k: v for k, v in values.items() if v is not None and str(v).strip() != ""}
+    if not keys_to_set:
+        return
+
+    seen: Dict[str, bool] = {k: False for k in keys_to_set}
+    out: List[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            out.append(line)
+            continue
+
+        key = line.split("=", 1)[0].strip()
+        if key in _DEPRECATED_ENV_KEYS:
+            continue
+        if key in keys_to_set:
+            out.append(f'{key}="{keys_to_set[key]}"')
+            seen[key] = True
+        else:
+            out.append(line)
+
+    missing = [k for k, done in seen.items() if not done]
+    if missing:
+        if out and out[-1].strip() != "":
+            out.append("")
+        if not any("Last selection cache" in ln for ln in out):
+            out.append("# Last selection cache")
+        for key in missing:
+            out.append(f'{key}="{keys_to_set[key]}"')
+
+    env_local.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+    os.chmod(env_local, 0o600)
 
 
 def aws_env_without_profile() -> Dict[str, str]:
@@ -847,11 +906,22 @@ def select_profile(cfg: Dict[str, str]) -> Optional[Tuple[str, str, str]]:
             return None
 
         mapping: Dict[str, Tuple[str, str]] = {}
-        choices = ["Exit", "Clear Session", "Refresh"]
+        account_labels: List[str] = []
+        preferred_account_id = cfg.get("lastAccountId", "").strip()
         for aid, aname in accounts:
             label = f"{aname} ({aid})"
             mapping[label] = (aid, aname)
-            choices.append(label)
+            account_labels.append(label)
+
+        preferred_label = ""
+        if preferred_account_id:
+            for label, (aid, _) in mapping.items():
+                if aid == preferred_account_id:
+                    preferred_label = label
+                    break
+
+        account_labels = _move_preferred_first(account_labels, preferred_label)
+        choices = account_labels + ["Refresh", "Clear Session", "Exit"]
 
         choice = choose_menu("Select an AWS account:", choices)
         if choice is None or choice == "Exit":
@@ -876,13 +946,27 @@ def select_profile(cfg: Dict[str, str]) -> Optional[Tuple[str, str, str]]:
             selected_role = roles[0]
             msg_info(f"Single role found for '{account_name}': {selected_role}")
         else:
-            role_choice = choose_menu(f"Select role for '{account_name}':", roles + ["Exit"])
+            preferred_role = cfg.get("lastRoleName", "").strip() if account_id == cfg.get("lastAccountId", "").strip() else ""
+            ordered_roles = _move_preferred_first(roles, preferred_role)
+            role_choice = choose_menu(f"Select role for '{account_name}':", ordered_roles + ["Exit"])
             if role_choice is None or role_choice == "Exit":
                 continue
             selected_role = role_choice
 
         profile = build_profile_name(account_name, selected_role)
         create_profile_if_missing(cfg, profile, account_id, selected_role)
+        cfg["lastAccountId"] = account_id
+        cfg["lastAccountName"] = account_name
+        cfg["lastRoleName"] = selected_role
+        cfg["lastProfile"] = profile
+        save_last_selection(
+            {
+                "lastAccountId": account_id,
+                "lastAccountName": account_name,
+                "lastRoleName": selected_role,
+                "lastProfile": profile,
+            }
+        )
         return profile, account_name, selected_role
 
 
@@ -997,13 +1081,20 @@ def _prompt_region_custom(default_region: str, profile: str) -> Optional[str]:
 
 def select_session_region(cfg: Dict[str, str], profile: str) -> Optional[Tuple[str, bool]]:
     default_region = (cfg.get("awsDefaultRegion") or "us-east-1").strip()
-    options = [f"Use default region: {default_region}", "Type custom region", "Cancel"]
+    last_region = (cfg.get("lastRegion") or "").strip()
+
+    options = [f"Use default region: {default_region}"]
+    if last_region and last_region != default_region:
+        options.append(f"Use last region: {last_region}")
+    options.extend(["Type custom region", "Cancel"])
 
     choice = choose_menu("Select AWS region for this session:", options)
     if choice is None or choice == "Cancel":
         return None
     if choice.startswith("Use default region:"):
         return default_region, False
+    if choice.startswith("Use last region:"):
+        return last_region, True
     if choice == "Type custom region":
         custom = _prompt_region_custom(default_region, profile)
         if not custom:
@@ -1203,6 +1294,9 @@ def do_awsswitch(cfg: Dict[str, str], emit_shell: bool) -> int:
             print(emit_shell_clear())
         return 0
 
+    cfg["lastRegion"] = region
+    save_last_selection({"lastRegion": region})
+
     if emit_shell:
         _ui_flash_center("Environment session configured successfully", 1.0, "OK")
         _close_curses_session()
@@ -1213,7 +1307,7 @@ def do_awsswitch(cfg: Dict[str, str], emit_shell: bool) -> int:
     return 0
 
 
-def configure_eks(profile: str, region: str) -> Tuple[Optional[str], str]:
+def configure_eks(profile: str, region: str, preferred_cluster: str = "") -> Tuple[Optional[str], str, Optional[str]]:
     try:
         data = run_aws_json(
             [
@@ -1231,22 +1325,26 @@ def configure_eks(profile: str, region: str) -> Tuple[Optional[str], str]:
         )
     except Exception as exc:
         msg_error(str(exc))
-        return None, "error"
+        return None, "error", None
 
     clusters = [str(c).strip() for c in data if str(c).strip()]
     clusters.sort(key=str.lower)
 
+    if preferred_cluster:
+        clusters = _move_preferred_first(clusters, preferred_cluster)
+
     if not clusters:
         msg_warn(f"No EKS clusters found in region {region}.")
-        return None, "no-clusters"
+        return None, "no-clusters", None
 
     if len(clusters) == 1:
         cluster = clusters[0]
         msg_info(f"Single EKS cluster found: {cluster}")
     else:
-        choice = choose_menu("Select the EKS Cluster:", ["Exit", *clusters])
+        # Keep cluster options first so remembered cluster is immediately selected.
+        choice = choose_menu("Select the EKS Cluster:", [*clusters, "Exit"])
         if choice is None or choice == "Exit":
-            return None, "cancel"
+            return None, "cancel", None
         cluster = choice
 
     kubeconfig = str(Path.home() / ".kube" / f"config-{profile}-{cluster}")
@@ -1271,13 +1369,13 @@ def configure_eks(profile: str, region: str) -> Tuple[Optional[str], str]:
     )
     if proc.returncode != 0:
         msg_error(proc.stderr.strip() or proc.stdout.strip() or "Failed to update kubeconfig")
-        return None, "error"
+        return None, "error", None
 
     shell = [
         f"export KUBECONFIG={shell_quote(kubeconfig)}",
         f"if [ -n \"$ZSH_VERSION\" ]; then export RPROMPT='%{{$fg[blue]%}}(EKS: {cluster})%{{$reset_color%}}'; fi",
     ]
-    return "\n".join(shell), "ok"
+    return "\n".join(shell), "ok", cluster
 
 
 def do_eksswitch(cfg: Dict[str, str], emit_shell: bool) -> int:
@@ -1301,9 +1399,11 @@ def do_eksswitch(cfg: Dict[str, str], emit_shell: bool) -> int:
     current_region = region
     current_is_custom = is_custom_region
     eks_shell: Optional[str] = None
+    selected_cluster: Optional[str] = None
+    preferred_cluster = cfg.get("lastCluster", "")
 
     while True:
-        eks_shell, reason = configure_eks(profile, current_region)
+        eks_shell, reason, selected_cluster = configure_eks(profile, current_region, preferred_cluster)
         if eks_shell is not None:
             break
 
@@ -1319,6 +1419,7 @@ def do_eksswitch(cfg: Dict[str, str], emit_shell: bool) -> int:
                         _close_curses_session()
                     return 1
                 current_region, current_is_custom = region_selection
+                preferred_cluster = cfg.get("lastCluster", "")
                 continue
 
         if emit_shell:
@@ -1333,6 +1434,18 @@ def do_eksswitch(cfg: Dict[str, str], emit_shell: bool) -> int:
         shell_lines.append(emit_shell_region(current_region, force_reset=current_is_custom))
         shell_lines.append(eks_shell)
         print("\n".join(shell_lines))
+
+    cfg["lastRegion"] = current_region
+    save_values: Dict[str, str] = {"lastRegion": current_region}
+    if selected_cluster:
+        cfg["lastCluster"] = selected_cluster
+        save_values.update(
+            {
+                "lastCluster": selected_cluster,
+            }
+        )
+
+    save_last_selection(save_values)
 
     return 0
 
