@@ -56,7 +56,7 @@ case "$1" in
     shift
     run_switch_and_eval eksswitch "$@" || abort_or_return
     ;;
-  install|remove|uninstall|refresh|configure|help)
+  install|remove|uninstall|refresh|configure|healthcheck|help)
     run_python "$@" || abort_or_return
     ;;
   "")

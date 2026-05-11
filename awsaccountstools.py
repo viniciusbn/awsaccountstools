@@ -1270,6 +1270,97 @@ def do_configure(cfg: Dict[str, str]) -> bool:
     return create_aws_profiles(cfg)
 
 
+def do_healthcheck(cfg: Dict[str, str]) -> bool:
+    ok = True
+    checks_total = 0
+    checks_passed = 0
+    aws_cli_ok = False
+
+    def _record_check(passed: bool) -> None:
+        nonlocal checks_total, checks_passed
+        checks_total += 1
+        if passed:
+            checks_passed += 1
+
+    msg_info("Running healthcheck...")
+
+    if require_aws_cli():
+        aws_cli_ok = True
+        _record_check(True)
+        msg_success("AWS CLI: available")
+    else:
+        _record_check(False)
+        msg_error("AWS CLI: not available")
+        ok = False
+
+    env_local = _env_local_path()
+    if env_local.exists():
+        _record_check(True)
+        msg_success(f"Config file: found ({env_local})")
+    else:
+        _record_check(False)
+        msg_error(f"Config file: missing ({env_local})")
+        ok = False
+
+    try:
+        check_required_config(cfg)
+        _record_check(True)
+        msg_success("Required config: valid")
+    except Exception as exc:
+        _record_check(False)
+        msg_error(f"Required config: invalid ({exc})")
+        ok = False
+
+    ensure_aws_config_file()
+    session_section = f"[sso-session {cfg.get('awsDefaultSession', '')}]"
+    aws_config_text = AWS_CONFIG.read_text(encoding="utf-8") if AWS_CONFIG.exists() else ""
+    if session_section and session_section in aws_config_text:
+        _record_check(True)
+        msg_success(f"AWS config session: present ({cfg.get('awsDefaultSession', '')})")
+    else:
+        _record_check(False)
+        msg_warn("AWS config session: missing, run configure/refresh to create it")
+        ok = False
+
+    regions = load_aws_regions()
+    if regions:
+        _record_check(True)
+        msg_success(f"Region cache: {len(regions)} regions loaded")
+    else:
+        _record_check(False)
+        msg_warn("Region cache: empty or unavailable, run Refresh/Reconfigure Profiles")
+        ok = False
+
+    if is_sso_token_valid(cfg):
+        _record_check(True)
+        msg_success("SSO token: valid")
+        if aws_cli_ok:
+            try:
+                accounts = list_accessible_accounts(cfg)
+                _record_check(True)
+                msg_success(f"Accessible accounts: {len(accounts)}")
+            except Exception as exc:
+                _record_check(False)
+                msg_error(f"Accessible accounts: failed ({exc})")
+                ok = False
+        else:
+            msg_warn("Accessible accounts: skipped because AWS CLI is unavailable")
+    else:
+        _record_check(False)
+        msg_warn("SSO token: expired or missing (run refresh to login)")
+        ok = False
+        msg_warn("Accessible accounts: skipped until SSO token is valid")
+
+    msg_info(f"Healthcheck summary: {checks_passed}/{checks_total} checks passed")
+
+    if ok:
+        msg_success("Healthcheck passed.")
+    else:
+        msg_warn("Healthcheck completed with warnings/errors.")
+
+    return ok
+
+
 def prepare_profile_selection(cfg: Dict[str, str]) -> Optional[Tuple[str, str, str, str, bool, List[str]]]:
     if not ensure_sso_session(cfg):
         return None
@@ -1492,7 +1583,7 @@ def do_eksswitch(cfg: Dict[str, str], emit_shell: bool) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="AWS SSO account tools (Python refactor)")
-    p.add_argument("command", choices=["install", "remove", "uninstall", "configure", "refresh", "awsswitch", "eksswitch", "help"])  # noqa: E501
+    p.add_argument("command", choices=["install", "remove", "uninstall", "configure", "refresh", "awsswitch", "eksswitch", "healthcheck", "help"])  # noqa: E501
     p.add_argument("--emit-shell", action="store_true", help="Emit shell export commands to stdout")
     return p
 
@@ -1520,6 +1611,11 @@ def main() -> int:
         except Exception as exc:
             msg_error(str(exc))
             return 1
+
+    if args.command == "healthcheck":
+        set_ui_company_name(cfg.get("awsCompanyName", "My Company"))
+        set_ui_company_logo(cfg.get("awsCompanyLogo"))
+        return 0 if do_healthcheck(cfg) else 1
 
     if args.command in {"install", "configure", "refresh", "awsswitch", "eksswitch"}:
         if not require_aws_cli():
