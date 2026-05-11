@@ -24,7 +24,9 @@ _SAVED_STDIN_FD = None
 _SAVED_STDOUT_FD = None
 _UI_STATUS_LINE = ""
 _UI_COMPANY_NAME = "My Company"
+_UI_COMPANY_LOGO = None  # type: Optional[str]
 _REGION_CACHE_BY_PROFILE: Dict[str, List[str]] = {}
+_AWS_REGIONS_LOAD_WARNED = False
 _CP_HEADER = 1
 _CP_COMPANY = 2
 _CP_SELECTED = 3
@@ -33,41 +35,39 @@ _CP_WARN = 5
 _CP_ERROR = 6
 _CP_HINT = 7
 _DEPRECATED_ENV_KEYS = {"lastClusterRegion", "lastClusterProfile"}
-_STATIC_AWS_REGIONS = {
-    "af-south-1",
-    "ap-east-1",
-    "ap-east-2",
-    "ap-northeast-1",
-    "ap-northeast-2",
-    "ap-northeast-3",
-    "ap-south-1",
-    "ap-south-2",
-    "ap-southeast-1",
-    "ap-southeast-2",
-    "ap-southeast-3",
-    "ap-southeast-4",
-    "ap-southeast-5",
-    "ap-southeast-7",
-    "ca-central-1",
-    "ca-west-1",
-    "eu-central-1",
-    "eu-central-2",
-    "eu-north-1",
-    "eu-south-1",
-    "eu-south-2",
-    "eu-west-1",
-    "eu-west-2",
-    "eu-west-3",
-    "il-central-1",
-    "me-central-1",
-    "me-south-1",
-    "mx-central-1",
-    "sa-east-1",
-    "us-east-1",
-    "us-east-2",
-    "us-west-1",
-    "us-west-2",
-}
+# --- Dynamic AWS Regions ---
+AWS_REGIONS_FILE = APP_DIR / ".aws_regions"
+
+def fetch_aws_regions(cfg: Dict[str, str]) -> list:
+    """Fetch AWS regions using AWS CLI and return as a sorted list."""
+    try:
+        region = cfg.get("awsDefaultRegion") or "us-east-1"
+        proc = subprocess.run([
+            "aws", "ec2", "describe-regions",
+            "--all-regions", "--query", "Regions[].RegionName", "--output", "json", "--region", region
+        ], text=True, capture_output=True, env=aws_env_without_profile())
+        if proc.returncode != 0:
+            return []
+        regions = json.loads(proc.stdout)
+        return sorted({str(r).strip() for r in regions if str(r).strip()})
+    except Exception:
+        return []
+
+def save_aws_regions(regions: list) -> None:
+    AWS_REGIONS_FILE.write_text(json.dumps(regions, indent=2) + "\n", encoding="utf-8")
+
+def load_aws_regions() -> list:
+    global _AWS_REGIONS_LOAD_WARNED
+    if AWS_REGIONS_FILE.exists():
+        try:
+            data = json.loads(AWS_REGIONS_FILE.read_text(encoding="utf-8"))
+            return [str(r).strip() for r in data if str(r).strip()]
+        except Exception:
+            if not _AWS_REGIONS_LOAD_WARNED:
+                msg_warn("Could not parse .aws_regions cache file. Run Refresh/Reconfigure Profiles to rebuild it.")
+                _AWS_REGIONS_LOAD_WARNED = True
+            return []
+    return []
 
 
 def ui_menu_active() -> bool:
@@ -78,6 +78,13 @@ def set_ui_company_name(company_name: str) -> None:
     global _UI_COMPANY_NAME
     name = (company_name or "").strip()
     _UI_COMPANY_NAME = name or "My Company"
+
+def set_ui_company_logo(logo: Optional[str]) -> None:
+    global _UI_COMPANY_LOGO
+    if logo and logo.strip():
+        _UI_COMPANY_LOGO = logo.strip("\n")
+    else:
+        _UI_COMPANY_LOGO = None
 
 
 def _ui_safe_add(stdscr, y: int, x: int, text: str, max_x: int, attr: int = 0) -> None:
@@ -119,23 +126,35 @@ def _ui_draw_frame(stdscr, title: str) -> int:
         _ui_safe_add(stdscr, 0, 0, " " * (max_x - 1), max_x, header_attr)
     _ui_safe_add(stdscr, 0, 2, "AWS Accounts Tools", max_x, header_attr | curses.A_BOLD)
 
-    content = f" Company: {_UI_COMPANY_NAME} "
-    box_inner = min(max(10, len(content)), max(10, max_x - 8))
-    box_w = min(max_x - 2, box_inner + 2)
-    left = max(0, (max_x - box_w) // 2)
-    top = 1
-
-    if max_y >= 5 and box_w >= 6:
-        top_border = "+" + "-" * (box_w - 2) + "+"
-        middle_text = content[: box_w - 2].ljust(box_w - 2)
-        mid_line = f"|{middle_text}|"
-        _ui_safe_add(stdscr, top, left, top_border, max_x, company_attr)
-        _ui_safe_add(stdscr, top + 1, left, mid_line, max_x, company_attr)
-        _ui_safe_add(stdscr, top + 2, left, top_border, max_x, company_attr)
+    # Show logo if defined, otherwise show company name
+    logo_lines = None
+    if _UI_COMPANY_LOGO:
+        logo_lines = _UI_COMPANY_LOGO.splitlines()
+    if logo_lines:
+        start_row = 1
+        for idx, line in enumerate(logo_lines):
+            line = line.rstrip()
+            col = max(0, (max_x - len(line)) // 2)
+            _ui_safe_add(stdscr, start_row + idx, col, line, max_x, company_attr)
+        content_row = start_row + len(logo_lines) + 1
+    else:
+        content = f" Company: {_UI_COMPANY_NAME} "
+        box_inner = min(max(10, len(content)), max(10, max_x - 8))
+        box_w = min(max_x - 2, box_inner + 2)
+        left = max(0, (max_x - box_w) // 2)
+        top = 1
+        if max_y >= 5 and box_w >= 6:
+            top_border = "+" + "-" * (box_w - 2) + "+"
+            middle_text = content[: box_w - 2].ljust(box_w - 2)
+            mid_line = f"|{middle_text}|"
+            _ui_safe_add(stdscr, top, left, top_border, max_x, company_attr)
+            _ui_safe_add(stdscr, top + 1, left, mid_line, max_x, company_attr)
+            _ui_safe_add(stdscr, top + 2, left, top_border, max_x, company_attr)
+        content_row = 4
 
     title_attr = _ui_color(_CP_HEADER, curses.A_BOLD) | curses.A_BOLD
-    _ui_safe_add(stdscr, 5, 0, title, max_x, title_attr)
-    return 7
+    _ui_safe_add(stdscr, content_row, 0, title, max_x, title_attr)
+    return content_row + 2
 
 
 def _ui_flash_center(message: str, seconds: float = 1.0, level: str = "INFO") -> None:
@@ -628,6 +647,13 @@ def create_profile_if_missing(cfg: Dict[str, str], profile_name: str, account_id
 def create_aws_profiles(cfg: Dict[str, str]) -> bool:
     started = dt.datetime.now()
     msg_info("Refreshing AWS account/role profiles from SSO (first run may take longer)...")
+    msg_info("Fetching AWS region list...")
+    regions = fetch_aws_regions(cfg)
+    if regions:
+        save_aws_regions(regions)
+        msg_success(f"AWS regions updated: {len(regions)} found.")
+    else:
+        msg_warn("Could not update AWS region list. Using previous cache or fallback.")
     try:
         accounts = list_accessible_accounts(cfg)
     except Exception as exc:
@@ -899,7 +925,11 @@ def select_profile(cfg: Dict[str, str]) -> Optional[Tuple[str, str, str]]:
             if login_attempts == 0:
                 login_attempts += 1
                 msg_warn("No accessible accounts found. Attempting SSO login...")
-                if subprocess.run(["aws", "sso", "login", "--sso-session", cfg["awsDefaultSession"]]).returncode == 0:
+                if subprocess.run(
+                    ["aws", "sso", "login", "--sso-session", cfg["awsDefaultSession"]],
+                    text=True,
+                    env=aws_env_without_profile(),
+                ).returncode == 0:
                     msg_success("SSO login successful. Retrying account list...")
                     continue
             msg_error("No accessible accounts found.")
@@ -920,15 +950,18 @@ def select_profile(cfg: Dict[str, str]) -> Optional[Tuple[str, str, str]]:
                     preferred_label = label
                     break
 
+        # More objective menu: only accounts and clear actions
         account_labels = _move_preferred_first(account_labels, preferred_label)
-        choices = account_labels + ["Refresh", "Clear Session", "Exit"]
+        choices = account_labels + ["Refresh/Reconfigure Profiles", "Clear Session", "Exit"]
 
-        choice = choose_menu("Select an AWS account:", choices)
+        choice = choose_menu("Select AWS Account:", choices)
         if choice is None or choice == "Exit":
             return None
         if choice == "Clear Session":
+            if ui_menu_active():
+                _ui_flash_center("Session cleared.", 1.0, "OK")
             return ("__CLEAR__", "", "")
-        if choice == "Refresh":
+        if choice == "Refresh/Reconfigure Profiles":
             create_aws_profiles(cfg)
             continue
 
@@ -1024,10 +1057,13 @@ def _validate_region_exists(region: str, profile: str, default_region: str) -> T
             return False, f"Region '{candidate}' does not exist."
         return True, ""
 
-    # Fallback validation when region listing is not available for current permissions.
-    if candidate not in _STATIC_AWS_REGIONS:
-        return False, f"Region '{candidate}' is invalid or unsupported."
-    return True, ""
+    # Fallback: try dynamic regions file
+    dynamic_regions = load_aws_regions()
+    if dynamic_regions:
+        if candidate not in dynamic_regions:
+            return False, f"Region '{candidate}' is invalid or unsupported."
+        return True, ""
+    return False, "Could not validate region list right now. Run Refresh/Reconfigure Profiles and try again."
 
 
 def _prompt_region_custom(default_region: str, profile: str) -> Optional[str]:
@@ -1288,10 +1324,12 @@ def do_awsswitch(cfg: Dict[str, str], emit_shell: bool) -> int:
 
     profile, account_name, role_name, region, is_custom_region, export_lines = prepared
     if profile == "__CLEAR__":
-        msg_success("Cleared. Session profile and credentials unset.")
         if emit_shell:
+            msg_success("Cleared. Session profile and credentials unset.")
             _close_curses_session()
             print(emit_shell_clear())
+        else:
+            msg_warn("Clear Session requires shell mode to change environment variables.")
         return 0
 
     cfg["lastRegion"] = region
@@ -1390,10 +1428,12 @@ def do_eksswitch(cfg: Dict[str, str], emit_shell: bool) -> int:
     profile, account_name, role_name, region, is_custom_region, export_lines = prepared
 
     if profile == "__CLEAR__":
-        msg_success("Cleared. Session profile and credentials unset.")
         if emit_shell:
+            msg_success("Cleared. Session profile and credentials unset.")
             _close_curses_session()
             print(emit_shell_clear())
+        else:
+            msg_warn("Clear Session requires shell mode to change environment variables.")
         return 0
 
     current_region = region
@@ -1475,6 +1515,7 @@ def main() -> int:
             if args.command == "configure":
                 cfg = prompt_config_values(cfg, require_interactive=True)
             set_ui_company_name(cfg.get("awsCompanyName", "My Company"))
+            set_ui_company_logo(cfg.get("awsCompanyLogo"))
             check_required_config(cfg)
         except Exception as exc:
             msg_error(str(exc))
