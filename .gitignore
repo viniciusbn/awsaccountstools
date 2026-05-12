@@ -1,4 +1,7 @@
 **/.env
 **/.env.local
 **/.env.*.local
+.aws_regions
 bin/gum
+__pycache__/
+*.pyc
