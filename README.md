@@ -46,7 +46,7 @@ This adds `awsswitch` and `eksswitch` functions to your shell profile (`~/.zshrc
 source ~/.zshrc   # or source ~/.bashrc
 ```
 
-On first use, the tool will automatically create `.env.local` and guide you through the interactive configuration — no manual file editing required.
+On first use, the tool will automatically create `.env.local` and guide you through the interactive configuration.
 
 ### Other setup commands
 
