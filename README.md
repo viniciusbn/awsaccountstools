@@ -23,7 +23,9 @@ Interactive CLI toolkit for switching between AWS SSO accounts, roles, regions, 
 - **AWS CLI v2** (configured with SSO)
 - **Bash** or **Zsh** shell
 
-## Quick Start
+## Setup
+
+All setup operations are performed via `awsaccountstools.sh` directly.
 
 ### 1. Clone the repository
 
@@ -32,23 +34,7 @@ git clone https://github.com/viniciusbn/awsaccountstools.git
 cd awsaccountstools
 ```
 
-### 2. Create your configuration
-
-Copy the template and fill in your organization's values:
-
-```bash
-cp .env .env.local
-# Edit .env.local with your AWS SSO URL, session name, region, and company name
-```
-
-Or let the tool generate it interactively on first run:
-
-```bash
-source awsaccountstools.sh awsswitch
-# → Will prompt to create .env.local if it doesn't exist
-```
-
-### 3. Install shell functions
+### 2. Install shell functions
 
 ```bash
 source awsaccountstools.sh install
@@ -60,14 +46,31 @@ This adds `awsswitch` and `eksswitch` functions to your shell profile (`~/.zshrc
 source ~/.zshrc   # or source ~/.bashrc
 ```
 
-### 4. Use it
+On first use, the tool will automatically create `.env.local` and guide you through the interactive configuration — no manual file editing required.
+
+### Other setup commands
+
+| Command | Description |
+|---------|-------------|
+| `source awsaccountstools.sh install` | Add `awsswitch`/`eksswitch` functions to your shell profile. |
+| `source awsaccountstools.sh remove` | Remove shell functions from all known profile files. |
+| `./awsaccountstools.sh configure` | Open the interactive configure menu (add, edit, remove companies). |
+| `./awsaccountstools.sh refresh` | Re-login to SSO and refresh all profiles and region cache. |
+| `./awsaccountstools.sh healthcheck` | Run diagnostic checks and a dry-run cleanup preview. |
+| `./awsaccountstools.sh help` | Show usage information. |
+
+> **Note:** `install` and `remove` must be **sourced** to take effect in the current shell.
+
+## Daily Use
+
+After installation, all daily operations use the shell functions directly:
 
 ```bash
-awsswitch    # Switch AWS account, role, and region
-eksswitch    # Switch account + connect to an EKS cluster
+awsswitch                # Switch AWS account, role, and region
+eksswitch                # Switch account + connect to an EKS cluster
+awsswitch configure      # Edit companies, then switch
+eksswitch configure      # Edit companies, then switch + EKS
 ```
-
-## Commands
 
 | Command | Description |
 |---------|-------------|
@@ -75,35 +78,12 @@ eksswitch    # Switch account + connect to an EKS cluster
 | `eksswitch` | Same as `awsswitch`, plus EKS cluster selection with automatic kubeconfig generation. |
 | `awsswitch configure` | Open the interactive configure menu, then proceed with account switch. |
 | `eksswitch configure` | Open the interactive configure menu, then proceed with EKS switch. |
-| `install` | Add `awsswitch`/`eksswitch` functions to your shell profile. |
-| `remove` | Remove shell functions from all known profile files. |
-| `configure` | Open the interactive configure menu (add, edit, remove companies). |
-| `refresh` | Re-login to SSO and refresh all profiles and region cache. |
-| `healthcheck` | Run diagnostic checks and a dry-run cleanup preview. |
-| `help` | Show usage information. |
 
-### Usage
-
-```bash
-# Via shell functions (after install):
-awsswitch
-eksswitch
-awsswitch configure    # Edit companies, then switch
-eksswitch configure    # Edit companies, then switch + EKS
-
-# Via script directly:
-source awsaccountstools.sh awsswitch
-source awsaccountstools.sh eksswitch
-./awsaccountstools.sh configure
-./awsaccountstools.sh healthcheck
-./awsaccountstools.sh help
-```
-
-> **Note:** `awsswitch` and `eksswitch` must be **sourced** (not executed) so that environment variables take effect in the current shell.
+> **Note:** The shell functions set environment variables (`AWS_PROFILE`, `AWS_REGION`, etc.) in your current session — that's why they must run as functions, not as standalone scripts.
 
 ## Configuration
 
-Configuration is stored as JSON in `.env.local` (git-ignored). On first run, the tool will prompt you to create it.
+All configuration is managed interactively — there is no need to edit files manually. The tool stores its state as JSON in `.env.local` (git-ignored), which is created automatically on first run.
 
 ### Interactive Configure Menu
 
@@ -172,4 +152,4 @@ INFO    session 'my-session': 1 sso-session block(s), 12 profile block(s)
 source awsaccountstools.sh remove
 ```
 
-This removes the `awsswitch` and `eksswitch` functions from all shell profile files.
+This removes the `awsswitch` and `eksswitch` functions from all shell profile files (`~/.zshrc`, `~/.bashrc`, `~/.bash_profile`, `~/.zprofile`, `~/.profile`).
