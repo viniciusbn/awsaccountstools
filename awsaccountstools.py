@@ -494,7 +494,11 @@ def build_profile_name(account_name: str, role_name: str) -> str:
 def parse_iso8601(value: str) -> Optional[dt.datetime]:
     if not value:
         return None
-    fixed = value.replace("Z", "+00:00")
+    fixed = value.strip()
+    if fixed.endswith("UTC"):
+        fixed = fixed[:-3] + "+00:00"
+    else:
+        fixed = fixed.replace("Z", "+00:00")
     try:
         parsed = dt.datetime.fromisoformat(fixed)
         if parsed.tzinfo is None:
@@ -504,10 +508,19 @@ def parse_iso8601(value: str) -> Optional[dt.datetime]:
         return None
 
 
+def _normalize_start_url(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    return raw.rstrip("/").lower()
+
+
 def load_sso_cache_entries(start_url: str) -> List[Dict]:
     cache_dir = Path.home() / ".aws" / "sso" / "cache"
     if not cache_dir.exists():
         return []
+
+    target_url = _normalize_start_url(start_url)
 
     entries: List[Dict] = []
     for fp in cache_dir.glob("*.json"):
@@ -516,9 +529,9 @@ def load_sso_cache_entries(start_url: str) -> List[Dict]:
         except Exception:
             continue
         token = data.get("accessToken")
-        url = data.get("startUrl") or data.get("startURL")
+        url = _normalize_start_url(data.get("startUrl") or data.get("startURL") or "")
         expires = parse_iso8601(data.get("expiresAt", ""))
-        if token and url == start_url and expires:
+        if token and url and target_url and url == target_url and expires:
             entries.append({"token": token, "expires": expires})
 
     entries.sort(key=lambda e: e["expires"], reverse=True)
@@ -924,14 +937,15 @@ def select_profile(cfg: Dict[str, str]) -> Optional[Tuple[str, str, str]]:
         else:
             if login_attempts == 0:
                 login_attempts += 1
-                msg_warn("No accessible accounts found. Attempting SSO login...")
-                if subprocess.run(
-                    ["aws", "sso", "login", "--sso-session", cfg["awsDefaultSession"]],
-                    text=True,
-                    env=aws_env_without_profile(),
-                ).returncode == 0:
-                    msg_success("SSO login successful. Retrying account list...")
-                    continue
+                if not is_sso_token_valid(cfg):
+                    msg_warn("No accessible accounts found and token is invalid. Attempting SSO login...")
+                    if subprocess.run(
+                        ["aws", "sso", "login", "--sso-session", cfg["awsDefaultSession"]],
+                        text=True,
+                        env=aws_env_without_profile(),
+                    ).returncode == 0:
+                        msg_success("SSO login successful. Retrying account list...")
+                        continue
             msg_error("No accessible accounts found.")
             return None
 
