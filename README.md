@@ -1,82 +1,154 @@
-# AWS SSO accounts tools
-This script was designed to auto populate AWS Organizations Accounts and create console functions to optimize tasks.
+# AWS Accounts Tools
 
-## Config files
+Interactive CLI toolkit for switching between AWS SSO accounts, roles, regions, and EKS clusters. Features a full-screen curses TUI with arrow-key navigation, color-coded feedback, and last-selection memory for fast re-use.
 
-The repository includes a [.env](.env) file as a **template** with detailed documentation and placeholder values.
+## Features
 
-**For real usage:**
-1. Copy [.env](.env) to `.env.local` (this file is ignored by git).
-2. Edit `.env.local` with your organization's actual AWS SSO values.
+- **AWS SSO integration** — authenticates via `aws sso login` and auto-discovers all accessible accounts and roles
+- **Interactive TUI** — full-screen curses menus with arrow-key navigation, company branding, and color-coded status messages
+- **Auto profile creation** — automatically generates `[profile ...]` sections in `~/.aws/config` for every account/role combination
+- **Region selection** — choose from default, last-used, or type a custom region (validated against the AWS region list)
+- **EKS cluster switching** — select an EKS cluster after choosing an account, auto-generates kubeconfig
+- **Last-selection memory** — remembers your last account, role, region, and cluster for faster re-selection
+- **Shell prompt integration** — shows the active account/role in your zsh RPROMPT or bash PS1
+- **Healthcheck** — diagnostic command to verify AWS CLI, SSO token, config, and connectivity
+- **Dynamic region cache** — fetches and caches the full AWS region list locally for offline validation
+- **Fallback mode** — falls back to a numbered text menu when curses is unavailable
 
-Alternatively, on first execution without `.env.local`, the script prompts you to generate it interactively from the template.
+## Prerequisites
 
-This approach ensures:
-- Template is always tracked and documented in the repo
-- Sensitive values in `.env.local` are never accidentally committed
-- Easy onboarding for new team members (they follow the template)
+- **Python 3.10+** (standard library only — no pip dependencies)
+- **AWS CLI v2** (configured with SSO)
+- **Bash** or **Zsh** shell
 
-## How to use
+## Quick Start
 
-1. Clone this repo on any folder.
+### 1. Clone the repository
 
-2. Create your `.env.local` configuration:
-   ```bash
-   cp .env .env.local
-   # Then edit .env.local with your organization's AWS SSO values
-   ```
-   
-   Or let the script generate it interactively:
-   ```bash
-   ./awsaccountstools.sh awsswitch  # Will prompt to generate .env.local on first run
-   ```
-
-3. Run this script with one of these options
-```
-./awsaccountstools.sh OPTION
+```bash
+git clone https://github.com/viniciusbn/awsaccountstools.git
+cd awsaccountstools
 ```
 
+### 2. Create your configuration
 
-* OPTIONS:
-    * install<br />
-    Install the AWS Account Tools.
+Copy the template and fill in your organization's values:
 
-    * remove, uninstall<br />
-    Uninstall the AWS Account Tools.
-
-    * refresh, configure<br />
-    Configure the AWS Account Tools.
-
-    * awsswitch<br />
-    Switch AWS Account and select role dynamically.
-
-    * eksswitch<br />
-    Switch AWS Account + role, then switch EKS Cluster.
-
-    * help<br />
-    Show help.
-
-## After you installed this tool
-
-You can run these commands on any new console.
-
+```bash
+cp .env .env.local
+# Edit .env.local with your AWS SSO URL, session name, region, and company name
 ```
+
+Or let the tool generate it interactively on first run:
+
+```bash
+source awsaccountstools.sh awsswitch
+# → Will prompt to create .env.local if it doesn't exist
+```
+
+### 3. Install shell functions
+
+```bash
+source awsaccountstools.sh install
+```
+
+This adds `awsswitch` and `eksswitch` functions to your shell profile (`~/.zshrc` or `~/.bashrc`). Reload your shell afterward:
+
+```bash
+source ~/.zshrc   # or source ~/.bashrc
+```
+
+### 4. Use it
+
+```bash
+awsswitch    # Switch AWS account, role, and region
+eksswitch    # Switch account + connect to an EKS cluster
+```
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `awsswitch` | Interactive account/role/region selection. Exports `AWS_PROFILE`, `AWS_REGION`, and temporary credentials to the current shell session. |
+| `eksswitch` | Same as `awsswitch`, plus EKS cluster selection with automatic kubeconfig generation. |
+| `install` | Add `awsswitch`/`eksswitch` functions to your shell profile. |
+| `remove` | Remove shell functions from all known profile files. |
+| `configure` | Interactively review and update your SSO configuration. |
+| `refresh` | Re-login to SSO and refresh all profiles and region cache. |
+| `healthcheck` | Run diagnostic checks: AWS CLI, config, SSO token, regions, accounts. |
+| `help` | Show usage information. |
+
+### Usage
+
+```bash
+# Via shell functions (after install):
 awsswitch
-```
-List the organization accounts to select one.
-When an account has multiple roles assigned to your user, the tool asks which role you want to use.
-The selected account/role profile is created automatically if it does not exist yet.
-```
 eksswitch
+
+# Via script directly:
+source awsaccountstools.sh awsswitch
+source awsaccountstools.sh eksswitch
+./awsaccountstools.sh healthcheck
+./awsaccountstools.sh help
 ```
-List the organization accounts to select one, then list K8s clusters on this account.
+
+> **Note:** `awsswitch` and `eksswitch` must be **sourced** (not executed) so that environment variables take effect in the current shell.
+
+## Configuration
+
+### .env (template)
+
+The [.env](.env) file is a documented template with placeholder values. It is tracked in git and serves as a reference for new team members.
+
+### .env.local (your values)
+
+Your actual configuration goes in `.env.local` (git-ignored). Required keys:
+
+| Key | Description | Example |
+|-----|-------------|---------|
+| `awsStartURL` | Your organization's AWS SSO start URL | `https://my-org.awsapps.com/start` |
+| `awsDefaultSession` | SSO session name (used in AWS CLI config) | `my-org-session` |
+| `awsDefaultRegion` | Default AWS region for CLI and SSO operations | `us-east-1` |
+| `awsCompanyName` | Company name displayed in the TUI header | `My Company` |
+
+The tool also stores last-selection cache entries in `.env.local`:
+`lastAccountId`, `lastAccountName`, `lastRoleName`, `lastProfile`, `lastRegion`, `lastCluster`
+
+## Project Structure
+
+```
+awsaccountstools/
+├── awsaccountstools.sh          # Bash wrapper — sources exports into current shell
+├── .env                         # Configuration template (tracked in git)
+├── .gitignore
+├── README.md
+└── awsaccountstools/            # Python package
+    ├── __init__.py              # Package description
+    ├── __main__.py              # CLI entry point and argument parsing
+    ├── utils.py                 # Pure utility functions (sanitize, quote, parse)
+    ├── ui.py                    # Curses TUI class, menus, messaging, prompts
+    ├── config.py                # .env file management, validation, persistence
+    ├── regions.py               # Region fetching, caching, validation, selection
+    ├── aws.py                   # SSO authentication, profiles, AWS API calls
+    ├── shell.py                 # Shell export generation, install/uninstall
+    └── commands.py              # Command orchestration (awsswitch, eksswitch, etc.)
+```
+
+## What This Tool Does on Your System
+
+- **`~/.aws/config`** — Adds an `[sso-session ...]` section and `[profile ...]` sections for each account/role combination found via SSO
+- **Shell profile** (`~/.zshrc` or `~/.bashrc`) — Adds `awsswitch()` and `eksswitch()` function definitions (on install)
+- **`~/.kube/config-*`** — Creates per-cluster kubeconfig files when using `eksswitch`
+- **`.env.local`** — Stores your configuration and last-selection cache (local, git-ignored)
+- **`.aws_regions`** — Caches the AWS region list locally (git-ignored)
 
 > [!WARNING]
-> After you have installed this tool, you can't move or delete the local repo, because the functions will point to this location, if you move the folder, rerun the installation, to update the path for functions.
+> After installing, do not move or delete the repository folder. The shell functions point to this location. If you move the folder, re-run `install` to update the paths.
 
-## What does this tool do on your system?
+## Uninstall
 
-This tool will modify your ~/.aws/config file to add the required sections and populate it with all profile accounts from your organization.
+```bash
+source awsaccountstools.sh remove
+```
 
-When you install this app, the script will create functions on your shell profile, to allow you to call these tools from any new console shell.
-
+This removes the `awsswitch` and `eksswitch` functions from all shell profile files.

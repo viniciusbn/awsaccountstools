@@ -1,25 +1,48 @@
 #!/usr/bin/env bash
+# =============================================================================
+# AWS Accounts Tools — Shell Wrapper
+# =============================================================================
+# This script MUST be sourced (not executed) for awsswitch/eksswitch so that
+# environment variables (AWS_PROFILE, AWS_REGION, etc.) are set in the
+# caller's shell session. Other commands (install, healthcheck, etc.) can
+# be run normally since they don't modify the shell environment.
+#
+# Usage:
+#   source awsaccountstools.sh awsswitch   # Interactive account switch
+#   source awsaccountstools.sh eksswitch   # Account switch + EKS cluster
+#   ./awsaccountstools.sh healthcheck      # Diagnostic checks
+#   ./awsaccountstools.sh help             # Show available commands
+#
+# Security: The eval in run_switch_and_eval() only processes lines matching
+# strict awk patterns (export, unset, if/else/fi, typeset -gx) to prevent
+# arbitrary code execution from Python output.
+# =============================================================================
 
+# Resolve the directory where this script lives (works for both bash and zsh)
 if [ -n "$BASH_VERSION" ]; then
   APP_DIR=$(dirname "$(realpath "$BASH_SOURCE")")
 else
   APP_DIR=$(dirname "$(realpath "$0")")
 fi
-PY_APP="$APP_DIR/awsaccountstools.py"
 
+# Abort in sourced context (return) or exit in executed context
 abort_or_return() {
   return 1 2>/dev/null || exit 1
 }
 
+# Invoke the Python package, setting PYTHONPATH so the package is importable
 run_python() {
   if command -v python3 >/dev/null 2>&1; then
-    python3 "$PY_APP" "$@"
+    PYTHONPATH="$APP_DIR" python3 -m awsaccountstools "$@"
   else
     echo "python3 is required to run awsaccountstools." >&2
     return 1
   fi
 }
 
+# Run a switch command (awsswitch/eksswitch) and eval the filtered shell output.
+# The Python script prints export/unset commands to stdout (--emit-shell flag).
+# An awk filter whitelist ensures only safe shell statements are eval'd.
 run_switch_and_eval() {
   local cmd="$1"
   shift
@@ -47,6 +70,7 @@ run_switch_and_eval() {
   return 0
 }
 
+# Command dispatcher
 case "$1" in
   awsswitch)
     shift
