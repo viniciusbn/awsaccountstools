@@ -1,10 +1,12 @@
 # AWS Accounts Tools
 
-Interactive CLI toolkit for switching between AWS SSO accounts, roles, regions, and EKS clusters. Features a full-screen curses TUI with arrow-key navigation, color-coded feedback, and last-selection memory for fast re-use.
+Interactive CLI toolkit for switching between AWS SSO accounts, roles, regions, and EKS clusters across multiple companies. Features a full-screen curses TUI with arrow-key navigation, color-coded feedback, and last-selection memory for fast re-use.
 
 ## Features
 
 - **AWS SSO integration** — authenticates via `aws sso login` and auto-discovers all accessible accounts and roles
+- **Multi-company support** — configure multiple companies, each with its own SSO URL, session, and default region
+- **Others mode** — choose external profiles from `~/.aws/config` that are not managed by this app
 - **Interactive TUI** — full-screen curses menus with arrow-key navigation, company branding, and color-coded status messages
 - **Auto profile creation** — automatically generates `[profile ...]` sections in `~/.aws/config` for every account/role combination
 - **Region selection** — choose from default, last-used, or type a custom region (validated against the AWS region list)
@@ -69,13 +71,15 @@ eksswitch    # Switch account + connect to an EKS cluster
 
 | Command | Description |
 |---------|-------------|
-| `awsswitch` | Interactive account/role/region selection. Exports `AWS_PROFILE`, `AWS_REGION`, and temporary credentials to the current shell session. |
+| `awsswitch` | Choose a company (or Others), then interactively select account/role/region. |
 | `eksswitch` | Same as `awsswitch`, plus EKS cluster selection with automatic kubeconfig generation. |
+| `awsswitch configure` | Open the interactive configure menu, then proceed with account switch. |
+| `eksswitch configure` | Open the interactive configure menu, then proceed with EKS switch. |
 | `install` | Add `awsswitch`/`eksswitch` functions to your shell profile. |
 | `remove` | Remove shell functions from all known profile files. |
-| `configure` | Interactively review and update your SSO configuration. |
+| `configure` | Open the interactive configure menu (add, edit, remove companies). |
 | `refresh` | Re-login to SSO and refresh all profiles and region cache. |
-| `healthcheck` | Run diagnostic checks: AWS CLI, config, SSO token, regions, accounts. |
+| `healthcheck` | Run diagnostic checks and a dry-run cleanup preview. |
 | `help` | Show usage information. |
 
 ### Usage
@@ -84,10 +88,13 @@ eksswitch    # Switch account + connect to an EKS cluster
 # Via shell functions (after install):
 awsswitch
 eksswitch
+awsswitch configure    # Edit companies, then switch
+eksswitch configure    # Edit companies, then switch + EKS
 
 # Via script directly:
 source awsaccountstools.sh awsswitch
 source awsaccountstools.sh eksswitch
+./awsaccountstools.sh configure
 ./awsaccountstools.sh healthcheck
 ./awsaccountstools.sh help
 ```
@@ -96,23 +103,28 @@ source awsaccountstools.sh eksswitch
 
 ## Configuration
 
-### .env (template)
+Configuration is stored as JSON in `.env.local` (git-ignored). On first run, the tool will prompt you to create it.
 
-The [.env](.env) file is a documented template with placeholder values. It is tracked in git and serves as a reference for new team members.
+### Interactive Configure Menu
 
-### .env.local (your values)
+Running `configure` (or `awsswitch configure` / `eksswitch configure`) opens a menu-driven flow:
 
-Your actual configuration goes in `.env.local` (git-ignored). Required keys:
+1. **Add/Configure companies** — list existing companies for editing, or add a new one via a full-screen editor
+2. **Remove companies** — select a company to remove with confirmation; orphaned `[sso-session]` and `[profile]` blocks are automatically cleaned from `~/.aws/config`
+3. **Save and continue** — persist changes to `.env.local`
 
-| Key | Description | Example |
-|-----|-------------|---------|
-| `awsStartURL` | Your organization's AWS SSO start URL | `https://my-org.awsapps.com/start` |
-| `awsDefaultSession` | SSO session name (used in AWS CLI config) | `my-org-session` |
-| `awsDefaultRegion` | Default AWS region for CLI and SSO operations | `us-east-1` |
-| `awsCompanyName` | Company name displayed in the TUI header | `My Company` |
+You can configure zero companies to reset the managed configuration (the tool still works with Others/external profiles).
 
-The tool also stores last-selection cache entries in `.env.local`:
-`lastAccountId`, `lastAccountName`, `lastRoleName`, `lastProfile`, `lastRegion`, `lastCluster`
+### Company Editor
+
+Each company has four fields edited in a full-screen form:
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| Company name | Display name in menus and TUI header | `My Company` |
+| Start URL | AWS SSO start URL | `https://my-org.awsapps.com/start` |
+| Default session | SSO session name (used in AWS CLI config) | `my-org-session` |
+| Default region | Default AWS region for CLI and SSO | `us-east-1` |
 
 ## Project Structure
 
@@ -136,7 +148,7 @@ awsaccountstools/
 
 ## What This Tool Does on Your System
 
-- **`~/.aws/config`** — Adds an `[sso-session ...]` section and `[profile ...]` sections for each account/role combination found via SSO
+- **`~/.aws/config`** — Adds `[sso-session ...]` and `[profile ...]` sections for each account/role found via SSO. When a company is removed, its associated sections are automatically cleaned up.
 - **Shell profile** (`~/.zshrc` or `~/.bashrc`) — Adds `awsswitch()` and `eksswitch()` function definitions (on install)
 - **`~/.kube/config-*`** — Creates per-cluster kubeconfig files when using `eksswitch`
 - **`.env.local`** — Stores your configuration and last-selection cache (local, git-ignored)
@@ -144,6 +156,15 @@ awsaccountstools/
 
 > [!WARNING]
 > After installing, do not move or delete the repository folder. The shell functions point to this location. If you move the folder, re-run `install` to update the paths.
+
+## Healthcheck
+
+The `healthcheck` command runs diagnostic checks and includes a **dry-run cleanup preview** showing how many `[sso-session]` and `[profile]` blocks would be removed from `~/.aws/config` if each managed session were deleted:
+
+```
+INFO  Dry-run cleanup preview (if a company/session is removed):
+INFO    session 'my-session': 1 sso-session block(s), 12 profile block(s)
+```
 
 ## Uninstall
 

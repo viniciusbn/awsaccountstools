@@ -13,7 +13,7 @@ import json
 import re
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set
 
 from .config import (
     AWS_CONFIG,
@@ -152,6 +152,63 @@ def _read_all_profiles() -> set:
         return set()
     content = AWS_CONFIG.read_text(encoding="utf-8")
     return {m.group(1) for m in re.finditer(r"\[profile ([^\]]+)\]", content)}
+
+
+def _parse_profile_sections() -> Dict[str, Dict[str, str]]:
+    """Parse profile sections from ~/.aws/config into a dict.
+
+    Returns:
+        {
+          "profile-name": {"key": "value", ...},
+          ...
+        }
+    """
+    if not AWS_CONFIG.exists():
+        return {}
+
+    sections: Dict[str, Dict[str, str]] = {}
+    current_profile: Optional[str] = None
+
+    for raw in AWS_CONFIG.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        m = re.fullmatch(r"\[profile\s+([^\]]+)\]", line)
+        if m:
+            current_profile = m.group(1).strip()
+            sections.setdefault(current_profile, {})
+            continue
+
+        if current_profile and "=" in line:
+            key, val = line.split("=", 1)
+            sections[current_profile][key.strip()] = val.strip()
+
+    return sections
+
+
+def list_other_profiles(managed_sessions: Set[str]) -> List[str]:
+    """List profiles that are not managed by this app.
+
+    A profile is considered managed when:
+      - It has sso_session, sso_account_id, and sso_role_name, and
+      - Its sso_session belongs to one of the configured company sessions.
+    """
+    profiles = _parse_profile_sections()
+    out: List[str] = []
+
+    for profile_name, keys in profiles.items():
+        session = keys.get("sso_session", "")
+        is_managed = (
+            session in managed_sessions
+            and "sso_account_id" in keys
+            and "sso_role_name" in keys
+        )
+        if not is_managed:
+            out.append(profile_name)
+
+    out.sort(key=str.lower)
+    return out
 
 
 def create_profile_if_missing(

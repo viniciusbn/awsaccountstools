@@ -35,17 +35,32 @@ def build_parser() -> argparse.ArgumentParser:
         "--emit-shell", action="store_true",
         help="Emit shell export commands to stdout",
     )
+    p.add_argument(
+        "action", nargs="?",
+        help="Optional action. For awsswitch/eksswitch use: configure",
+    )
     return p
 
 
 def main() -> int:
     atexit.register(ui.close_ui)
     parser = build_parser()
-    args = parser.parse_args()
+    if hasattr(parser, "parse_intermixed_args"):
+        args = parser.parse_intermixed_args()
+    else:
+        args = parser.parse_args()
 
     if args.command == "help":
         parser.print_help()
         return 0
+
+    if args.action and args.command not in {"awsswitch", "eksswitch"}:
+        ui.msg_error(f"Unexpected action '{args.action}' for command '{args.command}'.")
+        return 1
+
+    if args.action and args.action != "configure":
+        ui.msg_error(f"Unsupported action '{args.action}'. Use 'configure'.")
+        return 1
 
     if args.command in {"remove", "uninstall"}:
         return 0 if remove_tool() else 1
@@ -54,17 +69,33 @@ def main() -> int:
 
     if args.command in {"install", "configure", "refresh", "awsswitch", "eksswitch"}:
         try:
+            env_local_existed = config.env_local_exists()
             cfg = config.ensure_env_local(cfg)
-            if args.command == "configure":
+            should_prompt_config = (
+                args.command == "configure"
+                or (args.command == "install" and not env_local_existed)
+                or (args.command in {"awsswitch", "eksswitch"} and args.action == "configure")
+            )
+            if should_prompt_config:
                 cfg = config.prompt_config_values(cfg, require_interactive=True)
-            ui.set_company_name(cfg.get("awsCompanyName", "My Company"))
-            config.check_required_config(cfg)
+            companies = config.load_companies(cfg)
+            if args.command in {"install", "configure", "refresh"}:
+                config.check_companies_config(companies)
+
+            if len(companies) == 1:
+                ui.set_company_name(companies[0].get("awsCompanyName", "My Company"))
+            else:
+                ui.set_company_name("Multi Company")
         except Exception as exc:
             ui.msg_error(str(exc))
             return 1
 
     if args.command == "healthcheck":
-        ui.set_company_name(cfg.get("awsCompanyName", "My Company"))
+        companies = config.load_companies(cfg)
+        if len(companies) == 1:
+            ui.set_company_name(companies[0].get("awsCompanyName", "My Company"))
+        else:
+            ui.set_company_name("Multi Company")
         return 0 if commands.do_healthcheck(cfg) else 1
 
     if args.command in {"install", "configure", "refresh", "awsswitch", "eksswitch"}:
@@ -76,6 +107,12 @@ def main() -> int:
 
     if args.command in {"configure", "refresh"}:
         return 0 if commands.do_configure(cfg) else 1
+
+    if args.command in {"awsswitch", "eksswitch"} and args.action == "configure":
+        ui.msg_info("Running configure routine before switch...")
+        if not commands.do_configure(cfg):
+            return 1
+        cfg = config.load_env_config()
 
     if args.command == "awsswitch":
         return commands.do_awsswitch(cfg, args.emit_shell)

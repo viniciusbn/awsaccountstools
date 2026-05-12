@@ -13,7 +13,7 @@ import curses
 import os
 import sys
 import time
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 # Curses color pair IDs — AWS-inspired palette (blue/amber accents)
 CP_HEADER = 1    # White on blue — top header bar
@@ -293,6 +293,64 @@ class CursesUI:
             elif key == 3:  # Ctrl+C
                 return None
 
+    def render_multi_select(self, title: str, options: List[str]) -> Optional[Set[int]]:
+        """Render a checkbox-style multi-select menu.
+
+        Controls:
+          - UP/DOWN arrows: move cursor
+          - SPACE: toggle current item
+          - ENTER: confirm selection
+          - ESC/Ctrl+C: cancel
+        Returns a set of selected option indexes, or None on cancel.
+        """
+        stdscr = self.stdscr
+        curses.curs_set(0)
+        stdscr.keypad(True)
+        stdscr.nodelay(False)
+        stdscr.clear()
+
+        selected_cursor = 0
+        selected_items: Set[int] = set()
+
+        while True:
+            stdscr.clear()
+            max_y, max_x = stdscr.getmaxyx()
+            row = self.draw_frame(title)
+
+            for i, option in enumerate(options):
+                if row >= max_y - 2:
+                    break
+                mark = "x" if i in selected_items else " "
+                text = f"[{mark}] {option}"
+                if i == selected_cursor:
+                    sel_attr = self._color(CP_SELECTED, curses.A_REVERSE) | curses.A_BOLD
+                    self._safe_add(row, 0, f"> {text}", max_x, sel_attr)
+                else:
+                    self._safe_add(row, 0, f"  {text}", max_x)
+                row += 1
+
+            hint = "Use arrows, SPACE to mark, ENTER to confirm, ESC to cancel"
+            hint_attr = self._color(CP_HINT, curses.A_DIM) | curses.A_DIM
+            self._safe_add(max_y - 1, 0, hint, max_x, hint_attr)
+            stdscr.refresh()
+
+            key = stdscr.getch()
+            if key == curses.KEY_UP:
+                selected_cursor = (selected_cursor - 1) % len(options)
+            elif key == curses.KEY_DOWN:
+                selected_cursor = (selected_cursor + 1) % len(options)
+            elif key == ord(" "):
+                if selected_cursor in selected_items:
+                    selected_items.remove(selected_cursor)
+                else:
+                    selected_items.add(selected_cursor)
+            elif key in (ord("\n"), ord("\r")):
+                return selected_items
+            elif key == 27:  # ESC
+                return None
+            elif key == 3:  # Ctrl+C
+                return None
+
     def prompt_region_input(
         self,
         default_region: str,
@@ -346,6 +404,154 @@ class CursesUI:
             self.show_status("WARN", err)
             self.flash_center(err, 1.2, "ERROR")
 
+    def _prompt_text_input(
+        self,
+        title: str,
+        label: str,
+        default_value: str,
+        required: bool,
+    ) -> Optional[str]:
+        """Prompt a text value in a full-screen curses form."""
+        stdscr = self.stdscr
+        while True:
+            max_y, max_x = stdscr.getmaxyx()
+            stdscr.clear()
+            row = self.draw_frame(title)
+            self._safe_add(row, 0, f"{label}:", max_x, curses.A_BOLD)
+            self._safe_add(row + 1, 0, f"Current: {default_value}", max_x)
+            self._safe_add(row + 3, 0, "New value (ENTER keeps current when empty):", max_x)
+            self._safe_add(row + 4, 0, "Value: ", max_x, curses.A_BOLD)
+
+            hint = "Type and press ENTER to confirm"
+            hint_attr = self._color(CP_HINT, curses.A_DIM) | curses.A_DIM
+            self._safe_add(max_y - 1, 0, hint, max_x, hint_attr)
+            stdscr.refresh()
+
+            try:
+                curses.echo()
+                col = len("Value: ")
+                stdscr.move(row + 4, col)
+                stdscr.clrtoeol()
+                raw = stdscr.getstr(row + 4, col, max(1, max_x - col - 1))
+            finally:
+                try:
+                    curses.noecho()
+                except Exception:
+                    pass
+
+            typed = raw.decode("utf-8", errors="ignore").strip() if raw is not None else ""
+            candidate = typed if typed else default_value
+            if required and not candidate.strip():
+                self.show_status("WARN", f"{label} is required.")
+                self.flash_center(f"{label} is required.", 1.0, "WARN")
+                continue
+            return candidate.strip()
+
+    def render_company_editor(self, company: Dict[str, str], number: int, is_new: bool = False) -> Optional[Dict[str, str]]:
+        """Render a full-screen editor for company fields.
+
+        Controls:
+          - UP/DOWN arrows: move through fields/actions
+          - ENTER: edit selected field or execute action
+          - ESC/Ctrl+C: cancel
+        """
+        stdscr = self.stdscr
+        curses.curs_set(0)
+        stdscr.keypad(True)
+        stdscr.nodelay(False)
+
+        values = {
+            "awsCompanyName": (company.get("awsCompanyName") or "My Company").strip(),
+            "awsStartURL": (company.get("awsStartURL") or "").strip(),
+            "awsDefaultSession": (company.get("awsDefaultSession") or "").strip(),
+            "awsDefaultRegion": (company.get("awsDefaultRegion") or "us-east-1").strip(),
+        }
+        fields = [
+            ("awsCompanyName", "Company name", True),
+            ("awsStartURL", "Start URL", True),
+            ("awsDefaultSession", "Default session", True),
+            ("awsDefaultRegion", "Default region", True),
+        ]
+
+        selected = 0
+        actions = ["Save", "Cancel"]
+        total_items = len(fields) + len(actions)
+        title = f"{'Add' if is_new else 'Edit'} company #{number}"
+
+        while True:
+            stdscr.clear()
+            max_y, max_x = stdscr.getmaxyx()
+            row = self.draw_frame(title)
+
+            for idx, (_, label, _) in enumerate(fields):
+                if row >= max_y - 3:
+                    break
+                value = values.get(fields[idx][0], "")
+                line = f"{label}: {value}"
+                if idx == selected:
+                    sel_attr = self._color(CP_SELECTED, curses.A_REVERSE) | curses.A_BOLD
+                    self._safe_add(row, 0, f"> {line}", max_x, sel_attr)
+                else:
+                    self._safe_add(row, 0, f"  {line}", max_x)
+                row += 1
+
+            if row < max_y - 3:
+                row += 1
+
+            for a_idx, action in enumerate(actions):
+                idx = len(fields) + a_idx
+                if row >= max_y - 2:
+                    break
+                line = f"[{action}]"
+                if idx == selected:
+                    sel_attr = self._color(CP_SELECTED, curses.A_REVERSE) | curses.A_BOLD
+                    self._safe_add(row, 0, f"> {line}", max_x, sel_attr)
+                else:
+                    self._safe_add(row, 0, f"  {line}", max_x)
+                row += 1
+
+            hint = "Use arrows, ENTER to edit/select, ESC to cancel"
+            hint_attr = self._color(CP_HINT, curses.A_DIM) | curses.A_DIM
+            self._safe_add(max_y - 1, 0, hint, max_x, hint_attr)
+            stdscr.refresh()
+
+            key = stdscr.getch()
+            if key == curses.KEY_UP:
+                selected = (selected - 1) % total_items
+                continue
+            if key == curses.KEY_DOWN:
+                selected = (selected + 1) % total_items
+                continue
+            if key in (27, 3):
+                return None
+            if key not in (ord("\n"), ord("\r")):
+                continue
+
+            if selected < len(fields):
+                field_key, label, required = fields[selected]
+                new_value = self._prompt_text_input(title, label, values.get(field_key, ""), required)
+                if new_value is not None:
+                    values[field_key] = new_value
+                continue
+
+            action = actions[selected - len(fields)]
+            if action == "Cancel":
+                return None
+
+            missing = [label for key, label, required in fields if required and not values.get(key, "").strip()]
+            if missing:
+                message = f"Required: {', '.join(missing)}"
+                self.show_status("WARN", message)
+                self.flash_center(message, 1.1, "WARN")
+                continue
+
+            return {
+                "awsCompanyName": values["awsCompanyName"],
+                "awsStartURL": values["awsStartURL"],
+                "awsDefaultSession": values["awsDefaultSession"],
+                "awsDefaultRegion": values["awsDefaultRegion"],
+            }
+
 
 # ---------------------------------------------------------------------------
 # Module-level singleton + public API
@@ -392,6 +598,32 @@ def choose_menu(title: str, options: List[str]) -> Optional[str]:
         except Exception:
             _ui.close()
     return _fallback_menu(title, options)
+
+
+def choose_multi_select(title: str, options: List[str]) -> Optional[Set[int]]:
+    """Present a multi-select menu and return selected indexes.
+
+    Tries curses UI first; falls back to textual interaction.
+    Returns None when user cancels.
+    """
+    if not options:
+        return set()
+    if _ui.open() and _ui.is_active:
+        try:
+            return _ui.render_multi_select(title, options)
+        except Exception:
+            _ui.close()
+    return _fallback_multi_select(title, options)
+
+
+def edit_company(company: Dict[str, str], number: int, is_new: bool = False) -> Optional[Dict[str, str]]:
+    """Edit company values with full-screen UI and textual fallback."""
+    if _ui.open() and _ui.is_active:
+        try:
+            return _ui.render_company_editor(company, number, is_new=is_new)
+        except Exception:
+            _ui.close()
+    return _fallback_company_editor(company)
 
 
 def prompt_region_custom(
@@ -455,6 +687,77 @@ def _fallback_menu(title: str, options: List[str]) -> Optional[str]:
             tty_out.close()
         if tty_in:
             tty_in.close()
+
+
+def _fallback_multi_select(title: str, options: List[str]) -> Optional[Set[int]]:
+    """Textual multi-select fallback when curses is unavailable."""
+    tty_out = None
+    tty_in = None
+    try:
+        tty_out = open("/dev/tty", "w", buffering=1)
+        tty_in = open("/dev/tty", "r")
+    except Exception:
+        pass
+
+    display = tty_out or sys.stdout
+    input_src = tty_in or sys.stdin
+    selected: Set[int] = set()
+
+    try:
+        while True:
+            print("\n" + title, file=display)
+            for i, item in enumerate(options, start=1):
+                mark = "x" if (i - 1) in selected else " "
+                print(f" {i}. [{mark}] {item}", file=display)
+            print("Commands: numbers=toggle, a=all, c=clear, d=done, q=cancel", file=display)
+            display.flush()
+
+            if tty_in:
+                display.write("Selection: ")
+                display.flush()
+                raw = input_src.readline().strip().lower()
+            else:
+                raw = input("Selection: ").strip().lower()
+
+            if raw == "q":
+                return None
+            if raw == "a":
+                selected = set(range(len(options)))
+                continue
+            if raw == "c":
+                selected.clear()
+                continue
+            if raw == "d":
+                return selected
+
+            tokens = [t.strip() for t in raw.replace(";", ",").split(",") if t.strip()]
+            for tok in tokens:
+                if not tok.isdigit():
+                    continue
+                idx = int(tok) - 1
+                if 0 <= idx < len(options):
+                    if idx in selected:
+                        selected.remove(idx)
+                    else:
+                        selected.add(idx)
+    finally:
+        if tty_out:
+            tty_out.close()
+        if tty_in:
+            tty_in.close()
+
+
+def _fallback_company_editor(company: Dict[str, str]) -> Optional[Dict[str, str]]:
+    """Text fallback for company editing when curses is unavailable."""
+    try:
+        return {
+            "awsCompanyName": prompt_required("awsCompanyName", company.get("awsCompanyName", "My Company")),
+            "awsStartURL": prompt_required("awsStartURL", company.get("awsStartURL", "")),
+            "awsDefaultSession": prompt_required("awsDefaultSession", company.get("awsDefaultSession", "")),
+            "awsDefaultRegion": prompt_required("awsDefaultRegion", company.get("awsDefaultRegion", "us-east-1")),
+        }
+    except KeyboardInterrupt:
+        return None
 
 
 # ---------------------------------------------------------------------------

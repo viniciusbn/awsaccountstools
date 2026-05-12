@@ -33,7 +33,34 @@ abort_or_return() {
 # Invoke the Python package, setting PYTHONPATH so the package is importable
 run_python() {
   if command -v python3 >/dev/null 2>&1; then
-    PYTHONPATH="$APP_DIR" python3 -m awsaccountstools "$@"
+    local active_shell=""
+
+    # Prefer the caller shell (parent process), which is reliable even when
+    # this script runs via bash shebang.
+    local parent_comm
+    parent_comm=$(ps -p "$PPID" -o comm= 2>/dev/null | tr '[:upper:]' '[:lower:]')
+    case "$parent_comm" in
+      *zsh*) active_shell="zsh" ;;
+      *bash*) active_shell="bash" ;;
+    esac
+
+    # Fallback to runtime shell vars.
+    if [ -z "$active_shell" ] && [ -n "$ZSH_VERSION" ]; then
+      active_shell="zsh"
+    fi
+    if [ -z "$active_shell" ] && [ -n "$BASH_VERSION" ]; then
+      active_shell="bash"
+    fi
+
+    # Last fallback to login shell from SHELL env var.
+    if [ -z "$active_shell" ]; then
+      case "$SHELL" in
+      *zsh*) active_shell="zsh" ;;
+      *bash*) active_shell="bash" ;;
+      esac
+    fi
+
+    AAT_ACTIVE_SHELL="$active_shell" PYTHONPATH="$APP_DIR" python3 -m awsaccountstools "$@"
   else
     echo "python3 is required to run awsaccountstools." >&2
     return 1
@@ -49,7 +76,7 @@ run_switch_and_eval() {
   local shell_out
   local filtered_out
 
-  shell_out=$(run_python "$cmd" --emit-shell "$@") || return 1
+  shell_out=$(run_python "$cmd" "$@" --emit-shell) || return 1
   if [ -n "$shell_out" ]; then
     filtered_out=$(printf '%s\n' "$shell_out" | awk '
       /^[[:space:]]*export[[:space:]]+[A-Za-z_][A-Za-z0-9_]*=.*/ { print; next }

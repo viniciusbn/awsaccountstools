@@ -6,6 +6,7 @@ definitions in the user's shell profile (~/.zshrc, ~/.bashrc, etc.).
 """
 
 import os
+import subprocess
 from pathlib import Path
 from typing import List
 
@@ -77,12 +78,50 @@ def emit_shell_clear() -> str:
 
 
 def detect_shell_profile() -> Path:
-    """Detect the user's shell profile file based on $SHELL."""
+    """Detect the most appropriate shell profile file.
+
+        Detection order favors the active shell context over stale login defaults:
+            1) Explicit override via AAT_ACTIVE_SHELL
+            2) Parent process command name
+            3) Exported shell version vars (ZSH_VERSION / BASH_VERSION)
+            4) SHELL env var
+            5) Reasonable file-based fallback
+    """
+    active_shell = os.getenv("AAT_ACTIVE_SHELL", "").strip().lower()
+    if "zsh" in active_shell:
+        return Path.home() / ".zshrc"
+    if "bash" in active_shell:
+        return Path.home() / ".bashrc"
+
+    try:
+        parent = subprocess.run(
+            ["ps", "-p", str(os.getppid()), "-o", "comm="],
+            text=True,
+            capture_output=True,
+        )
+        comm = (parent.stdout or "").strip().lower()
+        if "zsh" in comm:
+            return Path.home() / ".zshrc"
+        if "bash" in comm:
+            return Path.home() / ".bashrc"
+    except Exception:
+        pass
+
+    if os.getenv("ZSH_VERSION"):
+        return Path.home() / ".zshrc"
+    if os.getenv("BASH_VERSION"):
+        return Path.home() / ".bashrc"
+
     shell = os.getenv("SHELL", "")
     if "zsh" in shell:
         return Path.home() / ".zshrc"
     if "bash" in shell:
         return Path.home() / ".bashrc"
+
+    # Ambiguous environment fallback: prefer zshrc when present.
+    zshrc = Path.home() / ".zshrc"
+    if zshrc.exists():
+        return zshrc
     return Path.home() / ".profile"
 
 
@@ -119,10 +158,10 @@ def install_tool() -> bool:
     block = "\n".join([
         "",
         "function awsswitch() {",
-        f"\tsource {APP_DIR}/awsaccountstools.sh awsswitch",
+        f"\tsource {APP_DIR}/awsaccountstools.sh awsswitch \"$@\"",
         "}",
         "function eksswitch() {",
-        f"\tsource {APP_DIR}/awsaccountstools.sh eksswitch",
+        f"\tsource {APP_DIR}/awsaccountstools.sh eksswitch \"$@\"",
         "}",
         "",
     ])

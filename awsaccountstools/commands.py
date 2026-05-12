@@ -18,15 +18,20 @@ from .aws import (
     is_sso_token_valid,
     list_accessible_accounts,
     list_account_roles,
+    list_other_profiles,
     run_aws_json,
 )
 from .config import (
     AWS_CONFIG,
     _env_local_path,
     aws_env_without_profile,
-    check_required_config,
+    check_companies_config,
     ensure_aws_config_file,
+    get_company_last_selection,
+    load_companies,
+    preview_aws_config_cleanup_for_sessions,
     require_aws_cli,
+    save_company_last_selection,
     save_last_selection,
 )
 from .regions import load_aws_regions, select_session_region
@@ -41,6 +46,7 @@ from .ui import (
     msg_info,
     msg_success,
     msg_warn,
+    set_company_name,
 )
 from .utils import build_profile_name, move_preferred_first, shell_quote
 
@@ -58,6 +64,9 @@ def select_profile(cfg: Dict[str, str]) -> Optional[Tuple[str, str, str]]:
     role_name) or None on cancel.
     """
     init_ui()
+    company_name = cfg.get("awsCompanyName", "My Company")
+    cached = get_company_last_selection(cfg, company_name)
+    cfg.update(cached)
     login_attempts = 0
 
     while True:
@@ -155,7 +164,73 @@ def select_profile(cfg: Dict[str, str]) -> Optional[Tuple[str, str, str]]:
             "lastRoleName": selected_role,
             "lastProfile": profile,
         })
+        save_company_last_selection(company_name, {
+            "lastAccountId": account_id,
+            "lastAccountName": account_name,
+            "lastRoleName": selected_role,
+            "lastProfile": profile,
+        })
         return profile, account_name, selected_role
+
+
+def _choose_target_context(base_cfg: Dict[str, str]) -> Optional[Tuple[str, Dict[str, str]]]:
+    """Choose target context: a managed company or Others profiles.
+
+    Returns:
+      ("managed", company_cfg) or ("others", base_cfg) or None when canceled.
+    """
+    companies = load_companies(base_cfg)
+    options: List[str] = []
+    mapping: Dict[str, Dict[str, str]] = {}
+
+    for company in companies:
+        label = f"{company['awsCompanyName']} ({company['awsDefaultSession']})"
+        options.append(label)
+        cfg = dict(base_cfg)
+        cfg.update(company)
+        mapping[label] = cfg
+
+    options.append("Others (external AWS profiles)")
+    options.append("Exit")
+
+    choice = choose_menu("Select company/context:", options)
+    if choice is None or choice == "Exit":
+        return None
+    if choice == "Others (external AWS profiles)":
+        return ("others", dict(base_cfg))
+
+    selected_cfg = mapping[choice]
+    set_company_name(selected_cfg.get("awsCompanyName", "My Company"))
+    return ("managed", selected_cfg)
+
+
+def _prepare_others_profile(base_cfg: Dict[str, str]) -> Optional[Tuple[str, str, bool]]:
+    """Select a non-managed profile from ~/.aws/config and pick a region."""
+    companies = load_companies(base_cfg)
+    managed_sessions = {c.get("awsDefaultSession", "") for c in companies if c.get("awsDefaultSession")}
+    profiles = list_other_profiles(managed_sessions)
+    if not profiles:
+        message = "No external profiles found in ~/.aws/config."
+        msg_warn(message)
+        if is_ui_active():
+            flash_center(message, 1.4, "WARN")
+        return ("__NO_PROFILES__", "", False)
+
+    choice = choose_menu("Select external profile (Others):", [*profiles, "Clear Session", "Exit"])
+    if choice is None or choice == "Exit":
+        return None
+    if choice == "Clear Session":
+        return ("__CLEAR__", "", False)
+
+    profile = choice
+    region_cfg = dict(base_cfg)
+    if not region_cfg.get("awsDefaultRegion"):
+        region_cfg["awsDefaultRegion"] = "us-east-1"
+    region_selection = select_session_region(region_cfg, profile)
+    if not region_selection:
+        return None
+    region, is_custom = region_selection
+    return (profile, region, is_custom)
 
 
 # ---------------------------------------------------------------------------
@@ -254,24 +329,55 @@ def do_awsswitch(cfg: Dict[str, str], emit_shell: bool) -> int:
     if emit_shell:
         init_ui()
 
-    prepared = prepare_profile_selection(cfg)
-    if prepared is None:
+    while True:
+        target = _choose_target_context(cfg)
+        if target is None:
+            if emit_shell:
+                close_ui()
+            return 1
+
+        mode, selected_cfg = target
+
+        if mode == "others":
+            selected = _prepare_others_profile(selected_cfg)
+            if selected is None:
+                if emit_shell:
+                    close_ui()
+                return 1
+            profile, region, is_custom_region = selected
+            if profile == "__NO_PROFILES__":
+                continue
+            if profile == "__CLEAR__":
+                return _handle_clear(emit_shell)
+
+            save_last_selection({"lastProfile": profile, "lastRegion": region})
+            if emit_shell:
+                flash_center("Environment session configured successfully", 1.0, "OK")
+                close_ui()
+                shell_lines = [emit_shell_for_profile(profile, "Others", profile, region)]
+                shell_lines.append(emit_shell_region(region, force_reset=is_custom_region))
+                print("\n".join(shell_lines))
+            return 0
+
+        prepared = prepare_profile_selection(selected_cfg)
+        if prepared is None:
+            if emit_shell:
+                close_ui()
+            return 1
+
+        profile, account_name, role_name, region, is_custom_region, export_lines = prepared
+        if profile == "__CLEAR__":
+            return _handle_clear(emit_shell)
+
+        selected_cfg["lastRegion"] = region
+        save_last_selection({"lastRegion": region})
+        save_company_last_selection(selected_cfg.get("awsCompanyName", "My Company"), {"lastRegion": region})
+
         if emit_shell:
+            flash_center("Environment session configured successfully", 1.0, "OK")
             close_ui()
-        return 1
-
-    profile, account_name, role_name, region, is_custom_region, export_lines = prepared
-    if profile == "__CLEAR__":
-        return _handle_clear(emit_shell)
-
-    cfg["lastRegion"] = region
-    save_last_selection({"lastRegion": region})
-
-    if emit_shell:
-        flash_center("Environment session configured successfully", 1.0, "OK")
-        close_ui()
-        _emit_base_shell(profile, account_name, role_name, region, is_custom_region, export_lines)
-    return 0
+            _emit_base_shell(profile, account_name, role_name, region, is_custom_region, export_lines)
+        return 0
 
 
 def configure_eks(
@@ -347,19 +453,44 @@ def do_eksswitch(cfg: Dict[str, str], emit_shell: bool) -> int:
     if emit_shell:
         init_ui()
 
-    prepared = prepare_profile_selection(cfg)
-    if prepared is None:
-        if emit_shell:
-            close_ui()
-        return 1
+    while True:
+        target = _choose_target_context(cfg)
+        if target is None:
+            if emit_shell:
+                close_ui()
+            return 1
 
-    profile, account_name, role_name, region, is_custom_region, export_lines = prepared
-    if profile == "__CLEAR__":
-        return _handle_clear(emit_shell)
+        mode, selected_cfg = target
+
+        if mode == "others":
+            selected = _prepare_others_profile(selected_cfg)
+            if selected is None:
+                if emit_shell:
+                    close_ui()
+                return 1
+            profile, region, is_custom_region = selected
+            if profile == "__NO_PROFILES__":
+                continue
+            if profile == "__CLEAR__":
+                return _handle_clear(emit_shell)
+            account_name = "Others"
+            role_name = profile
+            export_lines: List[str] = []
+        else:
+            prepared = prepare_profile_selection(selected_cfg)
+            if prepared is None:
+                if emit_shell:
+                    close_ui()
+                return 1
+            profile, account_name, role_name, region, is_custom_region, export_lines = prepared
+            if profile == "__CLEAR__":
+                return _handle_clear(emit_shell)
+
+        break
 
     current_region = region
     current_is_custom = is_custom_region
-    preferred_cluster = cfg.get("lastCluster", "")
+    preferred_cluster = selected_cfg.get("lastCluster", cfg.get("lastCluster", ""))
 
     while True:
         eks_shell, reason, selected_cluster = configure_eks(
@@ -374,7 +505,7 @@ def do_eksswitch(cfg: Dict[str, str], emit_shell: bool) -> int:
                 ["Choose another region", "Cancel"],
             )
             if next_action == "Choose another region":
-                region_selection = select_session_region(cfg, profile)
+                region_selection = select_session_region(selected_cfg, profile)
                 if not region_selection:
                     if emit_shell:
                         close_ui()
@@ -390,27 +521,49 @@ def do_eksswitch(cfg: Dict[str, str], emit_shell: bool) -> int:
     if emit_shell:
         flash_center("Environment session configured successfully", 1.0, "OK")
         close_ui()
-        _emit_base_shell(
-            profile, account_name, role_name,
-            current_region, current_is_custom, export_lines,
-        )
+        if export_lines:
+            _emit_base_shell(
+                profile, account_name, role_name,
+                current_region, current_is_custom, export_lines,
+            )
+        else:
+            shell_lines = [emit_shell_for_profile(profile, account_name, role_name, current_region)]
+            shell_lines.append(emit_shell_region(current_region, force_reset=current_is_custom))
+            print("\n".join(shell_lines))
         print(eks_shell)
 
-    cfg["lastRegion"] = current_region
+    selected_cfg["lastRegion"] = current_region
     save_values: Dict[str, str] = {"lastRegion": current_region}
     if selected_cluster:
-        cfg["lastCluster"] = selected_cluster
+        selected_cfg["lastCluster"] = selected_cluster
         save_values["lastCluster"] = selected_cluster
     save_last_selection(save_values)
+    save_company_last_selection(selected_cfg.get("awsCompanyName", "My Company"), save_values)
     return 0
 
 
 def do_configure(cfg: Dict[str, str]) -> bool:
     """Run initial setup: SSO login + profile refresh."""
-    if not ensure_sso_session(cfg):
-        return False
-    configure_first_connect(cfg)
-    return create_aws_profiles(cfg)
+    companies = load_companies(cfg)
+    check_companies_config(companies)
+
+    if not companies:
+        msg_warn("No managed companies configured. Skipping SSO/profile refresh.")
+        return True
+
+    all_ok = True
+    for company in companies:
+        company_cfg = dict(cfg)
+        company_cfg.update(company)
+        set_company_name(company_cfg.get("awsCompanyName", "My Company"))
+        msg_info(f"Configuring company: {company_cfg['awsCompanyName']}")
+        if not ensure_sso_session(company_cfg):
+            all_ok = False
+            continue
+        configure_first_connect(company_cfg)
+        if not create_aws_profiles(company_cfg):
+            all_ok = False
+    return all_ok
 
 
 def do_healthcheck(cfg: Dict[str, str]) -> bool:
@@ -451,25 +604,49 @@ def do_healthcheck(cfg: Dict[str, str]) -> bool:
         msg_error(f"Config file: missing ({env_local})")
         ok = False
 
+    companies = load_companies(cfg)
     try:
-        check_required_config(cfg)
+        check_companies_config(companies)
         _record(True)
-        msg_success("Required config: valid")
+        msg_success(f"Company configs: valid ({len(companies)} configured)")
     except Exception as exc:
         _record(False)
-        msg_error(f"Required config: invalid ({exc})")
+        msg_error(f"Company configs: invalid ({exc})")
         ok = False
+        companies = []
 
     ensure_aws_config_file()
-    session_section = f"[sso-session {cfg.get('awsDefaultSession', '')}]"
     aws_config_text = AWS_CONFIG.read_text(encoding="utf-8") if AWS_CONFIG.exists() else ""
-    if session_section and session_section in aws_config_text:
-        _record(True)
-        msg_success(f"AWS config session: present ({cfg.get('awsDefaultSession', '')})")
+    managed_sessions = sorted({
+        company.get("awsDefaultSession", "").strip()
+        for company in companies
+        if company.get("awsDefaultSession", "").strip()
+    })
+
+    if managed_sessions:
+        preview = preview_aws_config_cleanup_for_sessions(managed_sessions)
+        msg_info("Dry-run cleanup preview (if a company/session is removed):")
+        for sess in managed_sessions:
+            counts = preview.get(sess, {"ssoSessions": 0, "profiles": 0})
+            msg_info(
+                f"  session '{sess}': "
+                f"{counts['ssoSessions']} sso-session block(s), "
+                f"{counts['profiles']} profile block(s)"
+            )
     else:
-        _record(False)
-        msg_warn("AWS config session: missing, run configure/refresh to create it")
-        ok = False
+        msg_info("Dry-run cleanup preview: no managed sessions configured.")
+
+    for company in companies:
+        session_name = company.get("awsDefaultSession", "")
+        company_name = company.get("awsCompanyName", "Company")
+        session_section = f"[sso-session {session_name}]"
+        if session_section and session_section in aws_config_text:
+            _record(True)
+            msg_success(f"AWS config session [{company_name}]: present ({session_name})")
+        else:
+            _record(False)
+            msg_warn(f"AWS config session [{company_name}]: missing, run configure/refresh")
+            ok = False
 
     regions = load_aws_regions()
     if regions:
@@ -480,25 +657,30 @@ def do_healthcheck(cfg: Dict[str, str]) -> bool:
         msg_warn("Region cache: empty or unavailable, run Refresh/Reconfigure Profiles")
         ok = False
 
-    if is_sso_token_valid(cfg):
-        _record(True)
-        msg_success("SSO token: valid")
-        if aws_cli_ok:
-            try:
-                accounts = list_accessible_accounts(cfg)
-                _record(True)
-                msg_success(f"Accessible accounts: {len(accounts)}")
-            except Exception as exc:
-                _record(False)
-                msg_error(f"Accessible accounts: failed ({exc})")
-                ok = False
+    for company in companies:
+        company_cfg = dict(cfg)
+        company_cfg.update(company)
+        company_name = company.get("awsCompanyName", "Company")
+
+        if is_sso_token_valid(company_cfg):
+            _record(True)
+            msg_success(f"SSO token [{company_name}]: valid")
+            if aws_cli_ok:
+                try:
+                    accounts = list_accessible_accounts(company_cfg)
+                    _record(True)
+                    msg_success(f"Accessible accounts [{company_name}]: {len(accounts)}")
+                except Exception as exc:
+                    _record(False)
+                    msg_error(f"Accessible accounts [{company_name}]: failed ({exc})")
+                    ok = False
+            else:
+                msg_warn(f"Accessible accounts [{company_name}]: skipped (AWS CLI unavailable)")
         else:
-            msg_warn("Accessible accounts: skipped because AWS CLI is unavailable")
-    else:
-        _record(False)
-        msg_warn("SSO token: expired or missing (run refresh to login)")
-        ok = False
-        msg_warn("Accessible accounts: skipped until SSO token is valid")
+            _record(False)
+            msg_warn(f"SSO token [{company_name}]: expired or missing (run refresh)")
+            ok = False
+            msg_warn(f"Accessible accounts [{company_name}]: skipped until token is valid")
 
     msg_info(f"Healthcheck summary: {checks_passed}/{checks_total} checks passed")
     if ok:
