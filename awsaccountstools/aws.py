@@ -25,6 +25,17 @@ from .regions import fetch_aws_regions, save_aws_regions
 from .ui import msg_error, msg_info, msg_success, msg_warn, is_ui_active, suspend_ui, resume_ui
 from .utils import build_profile_name, normalize_start_url, parse_iso8601
 
+# In-memory caches to avoid redundant API calls within a session.
+# Cleared explicitly via clear_account_caches() when user requests refresh.
+_accounts_cache: Dict[str, List[Tuple[str, str]]] = {}   # sso_session -> [(id, name)]
+_roles_cache: Dict[str, List[str]] = {}                   # account_id -> [role_name]
+
+
+def clear_account_caches() -> None:
+    """Clear the in-memory accounts and roles caches."""
+    _accounts_cache.clear()
+    _roles_cache.clear()
+
 
 def load_sso_cache_entries(start_url: str) -> List[Dict]:
     """Scan ~/.aws/sso/cache for SSO tokens matching the given start URL.
@@ -107,8 +118,14 @@ def configure_first_connect(cfg: Dict[str, str]) -> None:
 def list_accessible_accounts(cfg: Dict[str, str]) -> List[Tuple[str, str]]:
     """List all AWS accounts accessible via the current SSO token.
 
+    Uses an in-memory cache keyed by SSO session name. Call
+    clear_account_caches() to force a fresh fetch.
     Returns a sorted list of (account_id, account_name) tuples.
     """
+    cache_key = cfg.get("awsDefaultSession", "")
+    if cache_key in _accounts_cache:
+        return _accounts_cache[cache_key]
+
     token = get_sso_access_token(cfg)
     if not token:
         return []
@@ -125,11 +142,20 @@ def list_accessible_accounts(cfg: Dict[str, str]) -> List[Tuple[str, str]]:
         if aid and aname:
             out.append((aid, aname))
     out.sort(key=lambda x: x[1].lower())
+    if cache_key:
+        _accounts_cache[cache_key] = out
     return out
 
 
 def list_account_roles(cfg: Dict[str, str], account_id: str) -> List[str]:
-    """List the IAM roles available for a specific account via SSO."""
+    """List the IAM roles available for a specific account via SSO.
+
+    Uses an in-memory cache keyed by account_id. Call
+    clear_account_caches() to force a fresh fetch.
+    """
+    if account_id in _roles_cache:
+        return _roles_cache[account_id]
+
     token = get_sso_access_token(cfg)
     if not token:
         return []
@@ -143,6 +169,7 @@ def list_account_roles(cfg: Dict[str, str], account_id: str) -> List[str]:
     roles = [str(r.get("roleName", "")).strip() for r in data.get("roleList", [])]
     roles = [r for r in roles if r]
     roles.sort(key=str.lower)
+    _roles_cache[account_id] = roles
     return roles
 
 
@@ -233,7 +260,9 @@ def create_aws_profiles(cfg: Dict[str, str]) -> bool:
 
     Also updates the .aws_regions cache. Reads existing profiles once in batch
     and appends all new profiles in a single write for performance.
+    Clears in-memory caches so that subsequent selections use fresh data.
     """
+    clear_account_caches()
     started = dt.datetime.now()
     msg_info("Refreshing AWS account/role profiles from SSO (first run may take longer)...")
 
@@ -302,7 +331,8 @@ def ensure_sso_session(cfg: Dict[str, str]) -> bool:
     """Ensure an active SSO session exists, triggering browser login if needed.
 
     If the token is valid, returns True immediately. Otherwise, runs
-    'aws sso login' and refreshes all profiles on success.
+    'aws sso login'. Profiles are created on demand (not bulk-refreshed
+    on every login) to avoid unnecessary delays.
     """
     ensure_aws_config_file()
     configure_first_connect(cfg)
@@ -323,4 +353,6 @@ def ensure_sso_session(cfg: Dict[str, str]) -> bool:
     if proc.returncode != 0:
         msg_error("Could not authenticate to AWS SSO.")
         return False
-    return create_aws_profiles(cfg)
+    clear_account_caches()
+    msg_success("SSO login successful.")
+    return True

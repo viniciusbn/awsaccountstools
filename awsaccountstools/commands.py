@@ -70,39 +70,42 @@ def select_profile(cfg: Dict[str, str]) -> Optional[Tuple[str, str, str]]:
     cached = get_company_last_selection(cfg, company_name)
     cfg.update(cached)
     login_attempts = 0
+    accounts: Optional[List] = None
 
     while True:
-        started = dt.datetime.now()
-        msg_info("Loading accessible AWS accounts...")
-        try:
-            accounts = list_accessible_accounts(cfg)
-        except Exception as exc:
-            msg_error(str(exc))
-            return None
+        if accounts is None:
+            started = dt.datetime.now()
+            msg_info("Loading accessible AWS accounts...")
+            try:
+                accounts = list_accessible_accounts(cfg)
+            except Exception as exc:
+                msg_error(str(exc))
+                return None
 
-        sec = int((dt.datetime.now() - started).total_seconds())
-        if accounts:
-            msg_success(f"Loaded {len(accounts)} accounts in {sec}s.")
-        else:
-            if login_attempts == 0:
-                login_attempts += 1
-                if not is_sso_token_valid(cfg):
-                    msg_warn("No accessible accounts found and token is invalid. Attempting SSO login...")
-                    suspended = is_ui_active() and suspend_ui()
-                    try:
-                        login_rc = subprocess.run(
-                            ["aws", "sso", "login", "--sso-session", cfg["awsDefaultSession"]],
-                            text=True,
-                            env=aws_env_without_profile(),
-                        ).returncode
-                    finally:
-                        if suspended:
-                            resume_ui()
-                    if login_rc == 0:
-                        msg_success("SSO login successful. Retrying account list...")
-                        continue
-            msg_error("No accessible accounts found.")
-            return None
+            sec = int((dt.datetime.now() - started).total_seconds())
+            if accounts:
+                msg_success(f"Loaded {len(accounts)} accounts in {sec}s.")
+            else:
+                if login_attempts == 0:
+                    login_attempts += 1
+                    if not is_sso_token_valid(cfg):
+                        msg_warn("No accessible accounts found and token is invalid. Attempting SSO login...")
+                        suspended = is_ui_active() and suspend_ui()
+                        try:
+                            login_rc = subprocess.run(
+                                ["aws", "sso", "login", "--sso-session", cfg["awsDefaultSession"]],
+                                text=True,
+                                env=aws_env_without_profile(),
+                            ).returncode
+                        finally:
+                            if suspended:
+                                resume_ui()
+                        if login_rc == 0:
+                            msg_success("SSO login successful. Retrying account list...")
+                            accounts = None
+                            continue
+                msg_error("No accessible accounts found.")
+                return None
 
         mapping: Dict[str, Tuple[str, str]] = {}
         account_labels: List[str] = []
@@ -131,6 +134,7 @@ def select_profile(cfg: Dict[str, str]) -> Optional[Tuple[str, str, str]]:
             return ("__CLEAR__", "", "")
         if choice == "Refresh/Reconfigure Profiles":
             create_aws_profiles(cfg)
+            accounts = None
             continue
         if choice not in mapping:
             msg_warn("Invalid account selection. Please try again.")
