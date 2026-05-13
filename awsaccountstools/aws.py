@@ -9,6 +9,7 @@ to prevent circular credential resolution.
 """
 
 import datetime as dt
+import hashlib
 import json
 import re
 import subprocess
@@ -37,10 +38,24 @@ def clear_account_caches() -> None:
     _roles_cache.clear()
 
 
-def load_sso_cache_entries(start_url: str) -> List[Dict]:
-    """Scan ~/.aws/sso/cache for SSO tokens matching the given start URL.
+# Treat tokens that expire within this many seconds as already expired,
+# so we don't try to use a token that will die mid-call.
+_TOKEN_EXPIRY_BUFFER = dt.timedelta(seconds=60)
 
-    Compares URLs case-insensitively with trailing slashes stripped.
+
+def _sso_cache_filename(key: str) -> str:
+    """Return the AWS CLI SSO cache filename for a given key (session name or start URL)."""
+    return hashlib.sha1(key.encode("utf-8")).hexdigest() + ".json"
+
+
+def load_sso_cache_entries(start_url: str, session_name: str = "") -> List[Dict]:
+    """Scan ~/.aws/sso/cache for SSO tokens for this start URL / sso-session.
+
+    Modern AWS CLI (>=2.13) names the access-token cache file after the SHA1
+    of the sso-session name and may omit ``startUrl`` from the JSON. Legacy
+    versions name it after the SHA1 of the start URL and include ``startUrl``.
+    We try both lookups to be robust.
+
     Returns entries sorted by expiration (newest first).
     """
     cache_dir = Path.home() / ".aws" / "sso" / "cache"
@@ -48,6 +63,16 @@ def load_sso_cache_entries(start_url: str) -> List[Dict]:
         return []
 
     target_url = normalize_start_url(start_url)
+    target_session = (session_name or "").strip()
+
+    # Files we explicitly trust based on filename (modern + legacy).
+    trusted_names: Set[str] = set()
+    if target_session:
+        trusted_names.add(_sso_cache_filename(target_session))
+    if start_url:
+        trusted_names.add(_sso_cache_filename(start_url.strip()))
+        trusted_names.add(_sso_cache_filename(start_url.strip().rstrip("/")))
+
     entries: List[Dict] = []
     for fp in cache_dir.glob("*.json"):
         try:
@@ -55,9 +80,15 @@ def load_sso_cache_entries(start_url: str) -> List[Dict]:
         except Exception:
             continue
         token = data.get("accessToken")
-        url = normalize_start_url(data.get("startUrl") or data.get("startURL") or "")
         expires = parse_iso8601(data.get("expiresAt", ""))
-        if token and url and target_url and url == target_url and expires:
+        if not token or not expires:
+            continue
+
+        url = normalize_start_url(data.get("startUrl") or data.get("startURL") or "")
+        url_match = bool(target_url) and url == target_url
+        name_match = fp.name in trusted_names
+
+        if url_match or name_match:
             entries.append({"token": token, "expires": expires})
 
     entries.sort(key=lambda e: e["expires"], reverse=True)
@@ -65,19 +96,23 @@ def load_sso_cache_entries(start_url: str) -> List[Dict]:
 
 
 def get_sso_access_token(cfg: Dict[str, str]) -> Optional[str]:
-    """Get the most recent SSO access token for the configured start URL."""
-    entries = load_sso_cache_entries(cfg["awsStartURL"])
+    """Get the most recent SSO access token for the configured start URL / session."""
+    entries = load_sso_cache_entries(
+        cfg.get("awsStartURL", ""), cfg.get("awsDefaultSession", ""),
+    )
     if not entries:
         return None
     return entries[0]["token"]
 
 
 def is_sso_token_valid(cfg: Dict[str, str]) -> bool:
-    """Check if the current SSO token exists and has not expired yet."""
-    entries = load_sso_cache_entries(cfg["awsStartURL"])
+    """Check if the current SSO token exists and is comfortably non-expired."""
+    entries = load_sso_cache_entries(
+        cfg.get("awsStartURL", ""), cfg.get("awsDefaultSession", ""),
+    )
     if not entries:
         return False
-    return entries[0]["expires"] > dt.datetime.now(dt.timezone.utc)
+    return entries[0]["expires"] > dt.datetime.now(dt.timezone.utc) + _TOKEN_EXPIRY_BUFFER
 
 
 def run_aws_json(args: List[str]) -> Dict:
