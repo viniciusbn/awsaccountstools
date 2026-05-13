@@ -46,7 +46,9 @@ from .ui import (
     msg_info,
     msg_success,
     msg_warn,
+    resume_ui,
     set_company_name,
+    suspend_ui,
 )
 from .utils import build_profile_name, move_preferred_first, shell_quote
 
@@ -86,11 +88,17 @@ def select_profile(cfg: Dict[str, str]) -> Optional[Tuple[str, str, str]]:
                 login_attempts += 1
                 if not is_sso_token_valid(cfg):
                     msg_warn("No accessible accounts found and token is invalid. Attempting SSO login...")
-                    if subprocess.run(
-                        ["aws", "sso", "login", "--sso-session", cfg["awsDefaultSession"]],
-                        text=True,
-                        env=aws_env_without_profile(),
-                    ).returncode == 0:
+                    suspended = is_ui_active() and suspend_ui()
+                    try:
+                        login_rc = subprocess.run(
+                            ["aws", "sso", "login", "--sso-session", cfg["awsDefaultSession"]],
+                            text=True,
+                            env=aws_env_without_profile(),
+                        ).returncode
+                    finally:
+                        if suspended:
+                            resume_ui()
+                    if login_rc == 0:
                         msg_success("SSO login successful. Retrying account list...")
                         continue
             msg_error("No accessible accounts found.")

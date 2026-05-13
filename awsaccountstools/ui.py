@@ -139,6 +139,42 @@ class CursesUI:
                 pass
             self.tty_out = None
 
+    def suspend(self) -> bool:
+        """Temporarily leave curses mode so external commands can use the terminal.
+
+        Restores the terminal to normal mode without releasing file descriptors
+        or TTY handles, so resume() can re-enter curses quickly.
+        Returns True if curses was active and is now suspended.
+        """
+        if self.stdscr is None:
+            return False
+        try:
+            curses.nocbreak()
+            self.stdscr.keypad(False)
+            curses.echo()
+            curses.endwin()
+        except Exception:
+            pass
+        return True
+
+    def resume(self) -> bool:
+        """Re-enter curses mode after a suspend().
+
+        Assumes the screen object and TTY handles are still valid.
+        Returns True on success.
+        """
+        if self.stdscr is None:
+            return False
+        try:
+            self.stdscr.refresh()
+            curses.noecho()
+            curses.cbreak()
+            self.stdscr.keypad(True)
+            return True
+        except Exception:
+            self.close()
+            return False
+
     # -- Low-level helpers --
 
     def _color(self, pair_id: int, fallback: int = 0) -> int:
@@ -569,6 +605,16 @@ def init_ui() -> bool:
 def close_ui() -> None:
     """Close the curses session and restore the terminal to normal mode."""
     _ui.close()
+
+
+def suspend_ui() -> bool:
+    """Temporarily leave curses mode for external commands. Returns True if suspended."""
+    return _ui.suspend()
+
+
+def resume_ui() -> bool:
+    """Re-enter curses mode after suspend_ui(). Returns True on success."""
+    return _ui.resume()
 
 
 def is_ui_active() -> bool:
