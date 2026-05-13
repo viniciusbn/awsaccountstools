@@ -22,7 +22,7 @@ from .config import (
     ensure_aws_config_file,
 )
 from .regions import fetch_aws_regions, save_aws_regions
-from .ui import msg_error, msg_info, msg_success, msg_warn
+from .ui import msg_error, msg_info, msg_success, msg_warn, is_ui_active, suspend_ui, resume_ui
 from .utils import build_profile_name, normalize_start_url, parse_iso8601
 
 
@@ -310,11 +310,16 @@ def ensure_sso_session(cfg: Dict[str, str]) -> bool:
         return True
 
     msg_warn(f"SSO session '{cfg['awsDefaultSession']}' is expired or missing. Starting login...")
-    proc = subprocess.run(
-        ["aws", "sso", "login", "--sso-session", cfg["awsDefaultSession"]],
-        text=True,
-        env=aws_env_without_profile(),
-    )
+    suspended = is_ui_active() and suspend_ui()
+    try:
+        proc = subprocess.run(
+            ["aws", "sso", "login", "--sso-session", cfg["awsDefaultSession"]],
+            text=True,
+            env=aws_env_without_profile(),
+        )
+    finally:
+        if suspended:
+            resume_ui()
     if proc.returncode != 0:
         msg_error("Could not authenticate to AWS SSO.")
         return False
