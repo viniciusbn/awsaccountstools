@@ -9,6 +9,7 @@ to prevent circular credential resolution.
 """
 
 import datetime as dt
+import hashlib
 import json
 import re
 import subprocess
@@ -25,11 +26,36 @@ from .regions import fetch_aws_regions, save_aws_regions
 from .ui import msg_error, msg_info, msg_success, msg_warn, is_ui_active, suspend_ui, resume_ui
 from .utils import build_profile_name, normalize_start_url, parse_iso8601
 
+# In-memory caches to avoid redundant API calls within a session.
+# Cleared explicitly via clear_account_caches() when user requests refresh.
+_accounts_cache: Dict[str, List[Tuple[str, str]]] = {}   # sso_session -> [(id, name)]
+_roles_cache: Dict[str, List[str]] = {}                   # account_id -> [role_name]
 
-def load_sso_cache_entries(start_url: str) -> List[Dict]:
-    """Scan ~/.aws/sso/cache for SSO tokens matching the given start URL.
 
-    Compares URLs case-insensitively with trailing slashes stripped.
+def clear_account_caches() -> None:
+    """Clear the in-memory accounts and roles caches."""
+    _accounts_cache.clear()
+    _roles_cache.clear()
+
+
+# Treat tokens that expire within this many seconds as already expired,
+# so we don't try to use a token that will die mid-call.
+_TOKEN_EXPIRY_BUFFER = dt.timedelta(seconds=60)
+
+
+def _sso_cache_filename(key: str) -> str:
+    """Return the AWS CLI SSO cache filename for a given key (session name or start URL)."""
+    return hashlib.sha1(key.encode("utf-8")).hexdigest() + ".json"
+
+
+def load_sso_cache_entries(start_url: str, session_name: str = "") -> List[Dict]:
+    """Scan ~/.aws/sso/cache for SSO tokens for this start URL / sso-session.
+
+    Modern AWS CLI (>=2.13) names the access-token cache file after the SHA1
+    of the sso-session name and may omit ``startUrl`` from the JSON. Legacy
+    versions name it after the SHA1 of the start URL and include ``startUrl``.
+    We try both lookups to be robust.
+
     Returns entries sorted by expiration (newest first).
     """
     cache_dir = Path.home() / ".aws" / "sso" / "cache"
@@ -37,6 +63,16 @@ def load_sso_cache_entries(start_url: str) -> List[Dict]:
         return []
 
     target_url = normalize_start_url(start_url)
+    target_session = (session_name or "").strip()
+
+    # Files we explicitly trust based on filename (modern + legacy).
+    trusted_names: Set[str] = set()
+    if target_session:
+        trusted_names.add(_sso_cache_filename(target_session))
+    if start_url:
+        trusted_names.add(_sso_cache_filename(start_url.strip()))
+        trusted_names.add(_sso_cache_filename(start_url.strip().rstrip("/")))
+
     entries: List[Dict] = []
     for fp in cache_dir.glob("*.json"):
         try:
@@ -44,9 +80,15 @@ def load_sso_cache_entries(start_url: str) -> List[Dict]:
         except Exception:
             continue
         token = data.get("accessToken")
-        url = normalize_start_url(data.get("startUrl") or data.get("startURL") or "")
         expires = parse_iso8601(data.get("expiresAt", ""))
-        if token and url and target_url and url == target_url and expires:
+        if not token or not expires:
+            continue
+
+        url = normalize_start_url(data.get("startUrl") or data.get("startURL") or "")
+        url_match = bool(target_url) and url == target_url
+        name_match = fp.name in trusted_names
+
+        if url_match or name_match:
             entries.append({"token": token, "expires": expires})
 
     entries.sort(key=lambda e: e["expires"], reverse=True)
@@ -54,19 +96,23 @@ def load_sso_cache_entries(start_url: str) -> List[Dict]:
 
 
 def get_sso_access_token(cfg: Dict[str, str]) -> Optional[str]:
-    """Get the most recent SSO access token for the configured start URL."""
-    entries = load_sso_cache_entries(cfg["awsStartURL"])
+    """Get the most recent SSO access token for the configured start URL / session."""
+    entries = load_sso_cache_entries(
+        cfg.get("awsStartURL", ""), cfg.get("awsDefaultSession", ""),
+    )
     if not entries:
         return None
     return entries[0]["token"]
 
 
 def is_sso_token_valid(cfg: Dict[str, str]) -> bool:
-    """Check if the current SSO token exists and has not expired yet."""
-    entries = load_sso_cache_entries(cfg["awsStartURL"])
+    """Check if the current SSO token exists and is comfortably non-expired."""
+    entries = load_sso_cache_entries(
+        cfg.get("awsStartURL", ""), cfg.get("awsDefaultSession", ""),
+    )
     if not entries:
         return False
-    return entries[0]["expires"] > dt.datetime.now(dt.timezone.utc)
+    return entries[0]["expires"] > dt.datetime.now(dt.timezone.utc) + _TOKEN_EXPIRY_BUFFER
 
 
 def run_aws_json(args: List[str]) -> Dict:
@@ -107,8 +153,14 @@ def configure_first_connect(cfg: Dict[str, str]) -> None:
 def list_accessible_accounts(cfg: Dict[str, str]) -> List[Tuple[str, str]]:
     """List all AWS accounts accessible via the current SSO token.
 
+    Uses an in-memory cache keyed by SSO session name. Call
+    clear_account_caches() to force a fresh fetch.
     Returns a sorted list of (account_id, account_name) tuples.
     """
+    cache_key = cfg.get("awsDefaultSession", "")
+    if cache_key in _accounts_cache:
+        return _accounts_cache[cache_key]
+
     token = get_sso_access_token(cfg)
     if not token:
         return []
@@ -125,11 +177,20 @@ def list_accessible_accounts(cfg: Dict[str, str]) -> List[Tuple[str, str]]:
         if aid and aname:
             out.append((aid, aname))
     out.sort(key=lambda x: x[1].lower())
+    if cache_key:
+        _accounts_cache[cache_key] = out
     return out
 
 
 def list_account_roles(cfg: Dict[str, str], account_id: str) -> List[str]:
-    """List the IAM roles available for a specific account via SSO."""
+    """List the IAM roles available for a specific account via SSO.
+
+    Uses an in-memory cache keyed by account_id. Call
+    clear_account_caches() to force a fresh fetch.
+    """
+    if account_id in _roles_cache:
+        return _roles_cache[account_id]
+
     token = get_sso_access_token(cfg)
     if not token:
         return []
@@ -143,6 +204,7 @@ def list_account_roles(cfg: Dict[str, str], account_id: str) -> List[str]:
     roles = [str(r.get("roleName", "")).strip() for r in data.get("roleList", [])]
     roles = [r for r in roles if r]
     roles.sort(key=str.lower)
+    _roles_cache[account_id] = roles
     return roles
 
 
@@ -233,7 +295,9 @@ def create_aws_profiles(cfg: Dict[str, str]) -> bool:
 
     Also updates the .aws_regions cache. Reads existing profiles once in batch
     and appends all new profiles in a single write for performance.
+    Clears in-memory caches so that subsequent selections use fresh data.
     """
+    clear_account_caches()
     started = dt.datetime.now()
     msg_info("Refreshing AWS account/role profiles from SSO (first run may take longer)...")
 
@@ -302,7 +366,8 @@ def ensure_sso_session(cfg: Dict[str, str]) -> bool:
     """Ensure an active SSO session exists, triggering browser login if needed.
 
     If the token is valid, returns True immediately. Otherwise, runs
-    'aws sso login' and refreshes all profiles on success.
+    'aws sso login'. Profiles are created on demand (not bulk-refreshed
+    on every login) to avoid unnecessary delays.
     """
     ensure_aws_config_file()
     configure_first_connect(cfg)
@@ -323,4 +388,6 @@ def ensure_sso_session(cfg: Dict[str, str]) -> bool:
     if proc.returncode != 0:
         msg_error("Could not authenticate to AWS SSO.")
         return False
-    return create_aws_profiles(cfg)
+    clear_account_caches()
+    msg_success("SSO login successful.")
+    return True

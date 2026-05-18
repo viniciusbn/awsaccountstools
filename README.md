@@ -12,6 +12,7 @@ Interactive CLI toolkit for switching between AWS SSO accounts, roles, regions, 
 - **Region selection** — choose from default, last-used, or type a custom region (validated against the AWS region list)
 - **EKS cluster switching** — select an EKS cluster after choosing an account, auto-generates kubeconfig
 - **Last-selection memory** — remembers your last account, role, region, and cluster for faster re-selection
+- **`last` shortcut** — `awsswitch last` and `eksswitch last` re-apply the most recent selection without any prompts
 - **Shell prompt integration** — shows the active account/role in your zsh RPROMPT or bash PS1
 - **Healthcheck** — diagnostic command to verify AWS CLI, SSO token, config, and connectivity
 - **Dynamic region cache** — fetches and caches the full AWS region list locally for offline validation
@@ -70,6 +71,8 @@ awsswitch                # Switch AWS account, role, and region
 eksswitch                # Switch account + connect to an EKS cluster
 awsswitch configure      # Edit companies, then switch
 eksswitch configure      # Edit companies, then switch + EKS
+awsswitch last           # Re-apply the last selection (no prompts)
+eksswitch last           # Re-apply the last EKS selection (no prompts)
 ```
 
 | Command | Description |
@@ -78,8 +81,12 @@ eksswitch configure      # Edit companies, then switch + EKS
 | `eksswitch` | Same as `awsswitch`, plus EKS cluster selection with automatic kubeconfig generation. |
 | `awsswitch configure` | Open the interactive configure menu, then proceed with account switch. |
 | `eksswitch configure` | Open the interactive configure menu, then proceed with EKS switch. |
+| `awsswitch last` | Re-apply the last `awsswitch` selection (profile + region) without any prompts. Renews SSO credentials if needed. |
+| `eksswitch last` | Re-apply the last `eksswitch` selection (profile + region + cluster) without any prompts. |
 
 > **Note:** The shell functions set environment variables (`AWS_PROFILE`, `AWS_REGION`, etc.) in your current session — that's why they must run as functions, not as standalone scripts.
+
+> **Tip:** `last` reuses the cache stored in `.env.local` from your previous successful switch. If the profile or cluster is no longer available, run `awsswitch` / `eksswitch` to pick a new one.
 
 ## Configuration
 

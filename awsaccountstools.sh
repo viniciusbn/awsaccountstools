@@ -8,8 +8,10 @@
 # be run normally since they don't modify the shell environment.
 #
 # Usage:
-#   source awsaccountstools.sh awsswitch   # Interactive account switch
-#   source awsaccountstools.sh eksswitch   # Account switch + EKS cluster
+#   source awsaccountstools.sh awsswitch        # Interactive account switch
+#   source awsaccountstools.sh awsswitch last   # Reuse last selection (no prompts)
+#   source awsaccountstools.sh eksswitch        # Account switch + EKS cluster
+#   source awsaccountstools.sh eksswitch last   # Reuse last EKS selection
 #   ./awsaccountstools.sh healthcheck      # Diagnostic checks
 #   ./awsaccountstools.sh help             # Show available commands
 #
