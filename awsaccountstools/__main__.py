@@ -11,6 +11,10 @@ Available commands:
     eksswitch     — Switch AWS account + connect to an EKS cluster
     healthcheck   — Run diagnostic checks on configuration and connectivity
     help          — Show usage information
+
+Actions for awsswitch / eksswitch:
+    configure     — Run initial configure routine before switching
+    last          — Re-apply the last successful selection (no prompts)
 """
 
 import argparse
@@ -37,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "action", nargs="?",
-        help="Optional action. For awsswitch/eksswitch use: configure",
+        help="Optional action. For awsswitch/eksswitch use: configure | last",
     )
     return p
 
@@ -58,8 +62,8 @@ def main() -> int:
         ui.msg_error(f"Unexpected action '{args.action}' for command '{args.command}'.")
         return 1
 
-    if args.action and args.action != "configure":
-        ui.msg_error(f"Unsupported action '{args.action}'. Use 'configure'.")
+    if args.action and args.action not in {"configure", "last"}:
+        ui.msg_error(f"Unsupported action '{args.action}'. Use 'configure' or 'last'.")
         return 1
 
     if args.command in {"remove", "uninstall"}:
@@ -115,9 +119,13 @@ def main() -> int:
         cfg = config.load_env_config()
 
     if args.command == "awsswitch":
+        if args.action == "last":
+            return commands.do_awsswitch_last(cfg, args.emit_shell)
         return commands.do_awsswitch(cfg, args.emit_shell)
 
     if args.command == "eksswitch":
+        if args.action == "last":
+            return commands.do_eksswitch_last(cfg, args.emit_shell)
         return commands.do_eksswitch(cfg, args.emit_shell)
 
     parser.print_help()

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .aws import (
+    _parse_profile_sections,
     configure_first_connect,
     create_aws_profiles,
     create_profile_if_missing,
@@ -551,6 +552,210 @@ def do_eksswitch(cfg: Dict[str, str], emit_shell: bool) -> int:
         save_values["lastCluster"] = selected_cluster
     save_last_selection(save_values)
     save_company_last_selection(selected_cfg.get("awsCompanyName", "My Company"), save_values)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# "last" shortcut — reuse the most recent selection without prompting
+# ---------------------------------------------------------------------------
+
+def _resolve_last_context(cfg: Dict[str, str]) -> Optional[Tuple[str, Dict[str, str], Dict[str, str]]]:
+    """Resolve the most recent selection from the local cache.
+
+    Returns (mode, selected_cfg, selection) where:
+      - mode is "managed" or "others"
+      - selected_cfg is a per-company cfg (managed) or base cfg (others)
+      - selection has keys: lastProfile, lastRegion, lastAccountName,
+        lastRoleName, lastCluster (only what's available)
+
+    Returns None when no usable previous selection exists.
+    """
+    global_cache = cfg.get("__selectionGlobal", {}) if isinstance(cfg.get("__selectionGlobal", {}), dict) else {}
+    last_profile = str(global_cache.get("lastProfile", "")).strip()
+    last_region = str(global_cache.get("lastRegion", "")).strip()
+
+    if not last_profile or not last_region:
+        msg_error("No previous selection found. Run 'awsswitch' or 'eksswitch' once before using 'last'.")
+        return None
+
+    existing_profiles = set(_parse_profile_sections().keys())
+    if last_profile not in existing_profiles:
+        msg_error(
+            f"Last profile '{last_profile}' is no longer present in ~/.aws/config. "
+            "Run 'awsswitch' or 'eksswitch' to pick a new one."
+        )
+        return None
+
+    by_company = cfg.get("__selectionByCompany", {}) if isinstance(cfg.get("__selectionByCompany", {}), dict) else {}
+    companies = load_companies(cfg)
+
+    matched_company_name: Optional[str] = None
+    for cname, data in by_company.items():
+        if isinstance(data, dict) and str(data.get("lastProfile", "")).strip() == last_profile:
+            matched_company_name = cname
+            break
+
+    selection: Dict[str, str] = {
+        "lastProfile": last_profile,
+        "lastRegion": last_region,
+        "lastAccountName": str(global_cache.get("lastAccountName", "")).strip(),
+        "lastRoleName": str(global_cache.get("lastRoleName", "")).strip(),
+        "lastCluster": str(global_cache.get("lastCluster", "")).strip(),
+    }
+
+    if matched_company_name:
+        company = next(
+            (c for c in companies if c.get("awsCompanyName") == matched_company_name),
+            None,
+        )
+        if company is None:
+            msg_warn(
+                f"Cached company '{matched_company_name}' is no longer configured; "
+                "falling back to non-SSO reuse."
+            )
+        else:
+            selected_cfg = dict(cfg)
+            selected_cfg.update(company)
+            company_data = by_company.get(matched_company_name, {})
+            if isinstance(company_data, dict):
+                for k in ("lastAccountName", "lastRoleName", "lastCluster"):
+                    val = str(company_data.get(k, "")).strip()
+                    if val:
+                        selection[k] = val
+            return ("managed", selected_cfg, selection)
+
+    return ("others", dict(cfg), selection)
+
+
+def do_awsswitch_last(cfg: Dict[str, str], emit_shell: bool) -> int:
+    """Re-apply the last awsswitch selection (profile + region) without prompts."""
+    if emit_shell:
+        init_ui()
+
+    resolved = _resolve_last_context(cfg)
+    if resolved is None:
+        if emit_shell:
+            close_ui()
+        return 1
+
+    mode, selected_cfg, selection = resolved
+    profile = selection["lastProfile"]
+    region = selection["lastRegion"]
+
+    if mode == "managed":
+        if not ensure_sso_session(selected_cfg):
+            if emit_shell:
+                close_ui()
+            return 1
+        export_lines = _export_credentials(profile)
+        if export_lines is None:
+            if emit_shell:
+                close_ui()
+            return 1
+        account_name = selection.get("lastAccountName") or selected_cfg.get("awsCompanyName", "My Company")
+        role_name = selection.get("lastRoleName") or profile
+
+        msg_success(f"Reusing last selection: {profile} ({region})")
+        if emit_shell:
+            flash_center("Environment session configured successfully", 1.0, "OK")
+            close_ui()
+            _emit_base_shell(profile, account_name, role_name, region, False, export_lines)
+        return 0
+
+    # Others / non-managed profile — no credentials export.
+    msg_success(f"Reusing last selection: {profile} ({region})")
+    if emit_shell:
+        flash_center("Environment session configured successfully", 1.0, "OK")
+        close_ui()
+        shell_lines = [emit_shell_for_profile(profile, "Others", profile, region)]
+        shell_lines.append(emit_shell_region(region, force_reset=False))
+        print("\n".join(shell_lines))
+    return 0
+
+
+def _update_kubeconfig(profile: str, region: str, cluster: str) -> Optional[str]:
+    """Run 'aws eks update-kubeconfig' for the given cluster and return shell exports."""
+    kubeconfig = str(Path.home() / ".kube" / f"config-{profile}-{cluster}")
+    msg_info(f"Connecting to EKS cluster: {cluster} ({region})")
+    proc = subprocess.run(
+        [
+            "aws", "eks", "update-kubeconfig",
+            "--name", cluster,
+            "--profile", profile,
+            "--region", region,
+            "--kubeconfig", kubeconfig,
+        ],
+        text=True, capture_output=True, env=aws_env_without_profile(),
+    )
+    if proc.returncode != 0:
+        msg_error(proc.stderr.strip() or proc.stdout.strip() or "Failed to update kubeconfig")
+        return None
+    return "\n".join([
+        f"export KUBECONFIG={shell_quote(kubeconfig)}",
+        f"if [ -n \"$ZSH_VERSION\" ]; then "
+        f"export RPROMPT='%{{$fg[blue]%}}(EKS: {cluster})%{{$reset_color%}}'; fi",
+    ])
+
+
+def do_eksswitch_last(cfg: Dict[str, str], emit_shell: bool) -> int:
+    """Re-apply the last eksswitch selection (profile + region + cluster) without prompts."""
+    if emit_shell:
+        init_ui()
+
+    resolved = _resolve_last_context(cfg)
+    if resolved is None:
+        if emit_shell:
+            close_ui()
+        return 1
+
+    mode, selected_cfg, selection = resolved
+    profile = selection["lastProfile"]
+    region = selection["lastRegion"]
+    cluster = selection.get("lastCluster", "")
+
+    if not cluster:
+        msg_error(
+            "No previous EKS cluster found in the cache. "
+            "Run 'eksswitch' once before using 'eksswitch last'."
+        )
+        if emit_shell:
+            close_ui()
+        return 1
+
+    if mode == "managed":
+        if not ensure_sso_session(selected_cfg):
+            if emit_shell:
+                close_ui()
+            return 1
+        export_lines = _export_credentials(profile)
+        if export_lines is None:
+            if emit_shell:
+                close_ui()
+            return 1
+        account_name = selection.get("lastAccountName") or selected_cfg.get("awsCompanyName", "My Company")
+        role_name = selection.get("lastRoleName") or profile
+    else:
+        export_lines = []
+        account_name = "Others"
+        role_name = profile
+
+    eks_shell = _update_kubeconfig(profile, region, cluster)
+    if eks_shell is None:
+        if emit_shell:
+            close_ui()
+        return 1
+
+    msg_success(f"Reusing last selection: {profile} ({region}) -> {cluster}")
+    if emit_shell:
+        flash_center("Environment session configured successfully", 1.0, "OK")
+        close_ui()
+        if export_lines:
+            _emit_base_shell(profile, account_name, role_name, region, False, export_lines)
+        else:
+            shell_lines = [emit_shell_for_profile(profile, account_name, role_name, region)]
+            shell_lines.append(emit_shell_region(region, force_reset=False))
+            print("\n".join(shell_lines))
+        print(eks_shell)
     return 0
 
 
