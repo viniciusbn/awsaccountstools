@@ -2,13 +2,18 @@
 
 Interactive CLI toolkit for switching between AWS SSO accounts, roles, regions, and EKS clusters across multiple companies. Features a full-screen curses TUI with arrow-key navigation, color-coded feedback, and last-selection memory for fast re-use.
 
+Current documentation target: **2.1.1**
+
 ## Features
 
-- **AWS SSO integration** — authenticates via `aws sso login` and auto-discovers all accessible accounts and roles
+- **AWS SSO integration** — validates token status and authenticates via `aws sso login` only when needed
 - **Multi-company support** — configure multiple companies, each with its own SSO URL, session, and default region
 - **Others mode** — choose external profiles from `~/.aws/config` that are not managed by this app
 - **Interactive TUI** — full-screen curses menus with arrow-key navigation, company branding, and color-coded status messages
-- **Auto profile creation** — automatically generates `[profile ...]` sections in `~/.aws/config` for every account/role combination
+- **Managed profile cache mode** — daily switching uses existing managed profiles from `~/.aws/config` (no account/role API refresh by default)
+- **Explicit refresh flow** — account/role discovery and profile generation run only when you choose refresh
+- **Profile ranking** — last-selected profile is always first, followed by most-used profiles, then alphabetical tie-breaks
+- **Session-name safety checks** — rejects duplicated company sessions that differ only by letter case
 - **Region selection** — choose from default, last-used, or type a custom region (validated against the AWS region list)
 - **EKS cluster switching** — select an EKS cluster after choosing an account, auto-generates kubeconfig
 - **Last-selection memory** — remembers your last account, role, region, and cluster for faster re-selection
@@ -56,7 +61,7 @@ On first use, the tool will automatically create `.env.local` and guide you thro
 | `source awsaccountstools.sh install` | Add `awsswitch`/`eksswitch` functions to your shell profile. |
 | `source awsaccountstools.sh remove` | Remove shell functions from all known profile files. |
 | `./awsaccountstools.sh configure` | Open the interactive configure menu (add, edit, remove companies). |
-| `./awsaccountstools.sh refresh` | Re-login to SSO and refresh all profiles and region cache. |
+| `./awsaccountstools.sh refresh` | Re-login to SSO and regenerate managed profiles and region cache (explicit/manual refresh). |
 | `./awsaccountstools.sh healthcheck` | Run diagnostic checks and a dry-run cleanup preview. |
 | `./awsaccountstools.sh help` | Show usage information. |
 
@@ -77,7 +82,7 @@ eksswitch last           # Re-apply the last EKS selection (no prompts)
 
 | Command | Description |
 |---------|-------------|
-| `awsswitch` | Choose a company (or Others), then interactively select account/role/region. |
+| `awsswitch` | Choose a company (or Others), then select a cached profile and region. |
 | `eksswitch` | Same as `awsswitch`, plus EKS cluster selection with automatic kubeconfig generation. |
 | `awsswitch configure` | Open the interactive configure menu, then proceed with account switch. |
 | `eksswitch configure` | Open the interactive configure menu, then proceed with EKS switch. |
@@ -87,6 +92,13 @@ eksswitch last           # Re-apply the last EKS selection (no prompts)
 > **Note:** The shell functions set environment variables (`AWS_PROFILE`, `AWS_REGION`, etc.) in your current session — that's why they must run as functions, not as standalone scripts.
 
 > **Tip:** `last` reuses the cache stored in `.env.local` from your previous successful switch. If the profile or cluster is no longer available, run `awsswitch` / `eksswitch` to pick a new one.
+
+### Managed Profiles and Refresh Policy
+
+- Managed company switching reads profiles already present in `~/.aws/config` for the selected `sso_session`.
+- The tool does not refresh account/role discovery automatically during normal switching.
+- Use `Refresh/Reconfigure Profiles` in the menu or run `./awsaccountstools.sh refresh` when you want to rebuild managed profiles.
+- External profiles under Others are also sorted with the same ranking policy (last-selected first, then most-used).
 
 ## Configuration
 
@@ -112,6 +124,12 @@ Each company has four fields edited in a full-screen form:
 | Start URL | AWS SSO start URL | `https://my-org.awsapps.com/start` |
 | Default session | SSO session name (used in AWS CLI config) | `my-org-session` |
 | Default region | Default AWS region for CLI and SSO | `us-east-1` |
+
+> **Validation rule:** Session names that differ only by letter case (for example, `Matera-session` and `matera-session`) are treated as duplicates and are not allowed.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## Project Structure
 

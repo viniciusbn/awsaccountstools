@@ -6,7 +6,7 @@ multiple modules for string manipulation, date parsing, and list ordering.
 
 import datetime as dt
 import re
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 def sanitize_name(value: str) -> str:
@@ -98,3 +98,18 @@ def move_preferred_first(items: List[str], preferred: str) -> List[str]:
         out.remove(preferred)
         out.insert(0, preferred)
     return out
+
+
+def rank_items_by_usage(items: List[str], usage_rank: Dict[str, int], preferred: str = "") -> List[str]:
+    """Rank items by usage count (desc), with alphabetical tie-break and preferred pinned first.
+
+    The preferred item (usually the last selected profile) is always moved to
+    index 0 when present. Remaining items are sorted by:
+      1) usage count descending
+      2) case-insensitive alphabetical order
+    """
+    ranked = sorted(
+        list(items),
+        key=lambda item: (-int(usage_rank.get(item, 0)), item.lower()),
+    )
+    return move_preferred_first(ranked, preferred)
