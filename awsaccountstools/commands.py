@@ -109,6 +109,9 @@ def select_profile(cfg: Dict[str, str]) -> Optional[Tuple[str, str, str]]:
                 flash_center("Session cleared.", 1.0, "OK")
             return ("__CLEAR__", "", "")
         if choice == "Refresh/Reconfigure Profiles":
+            if not ensure_sso_session(cfg):
+                msg_error("Could not refresh profiles because SSO authentication failed.")
+                continue
             create_aws_profiles(cfg)
             profiles = None
             continue
@@ -210,7 +213,7 @@ def _prepare_others_profile(base_cfg: Dict[str, str]) -> Optional[Tuple[str, str
 # Shared helpers for awsswitch / eksswitch
 # ---------------------------------------------------------------------------
 
-def _export_credentials(profile: str) -> Optional[List[str]]:
+def _export_credentials(profile: str, show_error: bool = True) -> Optional[List[str]]:
     """Export temporary credentials for a profile as shell export lines.
 
     Filters out region-related exports (handled separately) and returns
@@ -221,7 +224,8 @@ def _export_credentials(profile: str) -> Optional[List[str]]:
         text=True, capture_output=True, env=aws_env_without_profile(),
     )
     if proc.returncode != 0:
-        msg_error(proc.stderr.strip() or "Failed to export credentials")
+        if show_error:
+            msg_error(proc.stderr.strip() or "Failed to export credentials")
         return None
 
     lines: List[str] = []
@@ -236,17 +240,32 @@ def _export_credentials(profile: str) -> Optional[List[str]]:
     return lines
 
 
+def _export_credentials_with_fallback(profile: str, cfg: Dict[str, str]) -> Optional[List[str]]:
+    """Export credentials, falling back to interactive SSO login only if required.
+
+    This mirrors the practical behavior from v1: try credential export first
+    (which allows AWS CLI to reuse/refresh SSO internally), and only trigger
+    browser login if export fails.
+    """
+    export_lines = _export_credentials(profile, show_error=False)
+    if export_lines is not None:
+        return export_lines
+
+    msg_warn("Could not export credentials from current cache. Trying SSO login fallback...")
+    if not ensure_sso_session(cfg):
+        return None
+
+    return _export_credentials(profile, show_error=True)
+
+
 def prepare_profile_selection(
     cfg: Dict[str, str],
 ) -> Optional[Tuple[str, str, str, str, bool, List[str]]]:
-    """Full selection pipeline: SSO session → profile → region → credentials.
+    """Full selection pipeline: profile → region → credentials (+SSO fallback).
 
     Returns (profile, account_name, role_name, region, is_custom, export_lines)
     or None on failure/cancel.
     """
-    if not ensure_sso_session(cfg):
-        return None
-
     selected = select_profile(cfg)
     if selected is None:
         return None
@@ -260,7 +279,7 @@ def prepare_profile_selection(
     region, is_custom_region = region_selection
 
     msg_success(f"Profile selected: {profile}")
-    export_lines = _export_credentials(profile)
+    export_lines = _export_credentials_with_fallback(profile, cfg)
     if export_lines is None:
         return None
     msg_info("Programmatic credentials exported.")
@@ -608,11 +627,7 @@ def do_awsswitch_last(cfg: Dict[str, str], emit_shell: bool) -> int:
     region = selection["lastRegion"]
 
     if mode == "managed":
-        if not ensure_sso_session(selected_cfg):
-            if emit_shell:
-                close_ui()
-            return 1
-        export_lines = _export_credentials(profile)
+        export_lines = _export_credentials_with_fallback(profile, selected_cfg)
         if export_lines is None:
             if emit_shell:
                 close_ui()
@@ -690,11 +705,7 @@ def do_eksswitch_last(cfg: Dict[str, str], emit_shell: bool) -> int:
         return 1
 
     if mode == "managed":
-        if not ensure_sso_session(selected_cfg):
-            if emit_shell:
-                close_ui()
-            return 1
-        export_lines = _export_credentials(profile)
+        export_lines = _export_credentials_with_fallback(profile, selected_cfg)
         if export_lines is None:
             if emit_shell:
                 close_ui()

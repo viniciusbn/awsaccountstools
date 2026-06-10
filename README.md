@@ -2,11 +2,11 @@
 
 Interactive CLI toolkit for switching between AWS SSO accounts, roles, regions, and EKS clusters across multiple companies. Features a full-screen curses TUI with arrow-key navigation, color-coded feedback, and last-selection memory for fast re-use.
 
-Current documentation target: **2.1.1**
+Current documentation target: **2.1.2**
 
 ## Features
 
-- **AWS SSO integration** — validates token status and authenticates via `aws sso login` only when needed
+- **AWS SSO integration** — tries credential reuse/export first and falls back to `aws sso login` only when required
 - **Multi-company support** — configure multiple companies, each with its own SSO URL, session, and default region
 - **Others mode** — choose external profiles from `~/.aws/config` that are not managed by this app
 - **Interactive TUI** — full-screen curses menus with arrow-key navigation, company branding, and color-coded status messages
@@ -86,7 +86,7 @@ eksswitch last           # Re-apply the last EKS selection (no prompts)
 | `eksswitch` | Same as `awsswitch`, plus EKS cluster selection with automatic kubeconfig generation. |
 | `awsswitch configure` | Open the interactive configure menu, then proceed with account switch. |
 | `eksswitch configure` | Open the interactive configure menu, then proceed with EKS switch. |
-| `awsswitch last` | Re-apply the last `awsswitch` selection (profile + region) without any prompts. Renews SSO credentials if needed. |
+| `awsswitch last` | Re-apply the last `awsswitch` selection (profile + region) without any prompts. Tries cached/refreshable credentials first and falls back to interactive SSO login only if required. |
 | `eksswitch last` | Re-apply the last `eksswitch` selection (profile + region + cluster) without any prompts. |
 
 > **Note:** The shell functions set environment variables (`AWS_PROFILE`, `AWS_REGION`, etc.) in your current session — that's why they must run as functions, not as standalone scripts.
@@ -96,6 +96,7 @@ eksswitch last           # Re-apply the last EKS selection (no prompts)
 ### Managed Profiles and Refresh Policy
 
 - Managed company switching reads profiles already present in `~/.aws/config` for the selected `sso_session`.
+- Managed company switching is credential-first: it tries `aws configure export-credentials` before attempting interactive SSO re-login.
 - The tool does not refresh account/role discovery automatically during normal switching.
 - Use `Refresh/Reconfigure Profiles` in the menu or run `./awsaccountstools.sh refresh` when you want to rebuild managed profiles.
 - External profiles under Others are also sorted with the same ranking policy (last-selected first, then most-used).

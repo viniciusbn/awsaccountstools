@@ -2,6 +2,18 @@
 
 All notable changes for this project are documented in this file.
 
+## 2.1.2 - 2026-06-10
+
+### Changed
+
+- Managed profile switching now follows a credential-first flow: the tool tries `aws configure export-credentials` before triggering interactive SSO login.
+- `awsswitch`, `eksswitch`, and their `last` shortcuts now only run `aws sso login` as a fallback when credential export fails.
+- `Refresh/Reconfigure Profiles` now performs explicit SSO validation before account/role discovery.
+
+### Fixed
+
+- Reduced unnecessary SSO reauthentication prompts during normal daily account/role switching when AWS CLI can reuse or silently refresh session state.
+
 ## 2.1.1 - 2026-06-01
 
 ### Added
