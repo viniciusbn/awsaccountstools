@@ -292,10 +292,20 @@ def load_companies(cfg: Dict[str, Any]) -> List[Dict[str, str]]:
 
 
 def check_companies_config(companies: List[Dict[str, str]]) -> None:
+    seen_sessions: Dict[str, str] = {}
     for idx, company in enumerate(companies, start=1):
         missing = [k for k in ["awsCompanyName", "awsStartURL", "awsDefaultSession", "awsDefaultRegion"] if not company.get(k)]
         if missing:
             raise RuntimeError(f"Company #{idx} is missing required keys: {', '.join(missing)}")
+
+        session = str(company.get("awsDefaultSession", "")).strip()
+        key = session.lower()
+        if key in seen_sessions and seen_sessions[key] != session:
+            raise RuntimeError(
+                "Duplicate awsDefaultSession values differ only by letter case: "
+                f"'{seen_sessions[key]}' and '{session}'. Keep only one variant."
+            )
+        seen_sessions[key] = session
 
 
 def get_company_last_selection(cfg: Dict[str, Any], company_name: str) -> Dict[str, str]:
@@ -320,6 +330,67 @@ def save_company_last_selection(company_name: str, values: Dict[str, str]) -> No
             if k in _DEPRECATED_ENV_KEYS:
                 continue
             company_cache[k] = str(v)
+
+    _update_local_doc(_mutate)
+
+
+def get_profile_usage_rank(cfg: Dict[str, Any], company_name: str = "") -> Dict[str, int]:
+    """Return profile usage counters from selection cache.
+
+    Company-scoped counters are used when company_name is provided.
+    Otherwise, global counters are returned.
+    """
+    if company_name:
+        by_company = cfg.get("__selectionByCompany", {})
+        if not isinstance(by_company, dict):
+            return {}
+        company_cache = by_company.get(company_name, {})
+        if not isinstance(company_cache, dict):
+            return {}
+        raw = company_cache.get("profileUsage", {})
+    else:
+        global_cache = cfg.get("__selectionGlobal", {})
+        if not isinstance(global_cache, dict):
+            return {}
+        raw = global_cache.get("profileUsage", {})
+
+    if not isinstance(raw, dict):
+        return {}
+
+    out: Dict[str, int] = {}
+    for name, count in raw.items():
+        profile = str(name).strip()
+        if not profile:
+            continue
+        try:
+            out[profile] = int(count)
+        except Exception:
+            continue
+    return out
+
+
+def increase_profile_usage(profile: str, company_name: str = "") -> None:
+    """Increment profile usage counters for ranking future selections."""
+    profile = str(profile).strip()
+    if not profile:
+        return
+
+    def _mutate(doc: Dict[str, Any]) -> None:
+        global_cache = doc["selectionCache"]["global"]
+        global_usage = global_cache.get("profileUsage", {})
+        if not isinstance(global_usage, dict):
+            global_usage = {}
+        global_usage[profile] = int(global_usage.get(profile, 0)) + 1
+        global_cache["profileUsage"] = global_usage
+
+        if company_name:
+            by_company = doc["selectionCache"]["byCompany"]
+            company_cache = by_company.setdefault(company_name, {})
+            company_usage = company_cache.get("profileUsage", {})
+            if not isinstance(company_usage, dict):
+                company_usage = {}
+            company_usage[profile] = int(company_usage.get(profile, 0)) + 1
+            company_cache["profileUsage"] = company_usage
 
     _update_local_doc(_mutate)
 

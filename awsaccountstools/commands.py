@@ -5,7 +5,6 @@ account/role/region selection, credential export, EKS cluster connection,
 and system healthcheck diagnostics.
 """
 
-import datetime as dt
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -14,11 +13,10 @@ from .aws import (
     _parse_profile_sections,
     configure_first_connect,
     create_aws_profiles,
-    create_profile_if_missing,
     ensure_sso_session,
     is_sso_token_valid,
     list_accessible_accounts,
-    list_account_roles,
+    list_managed_profiles,
     list_other_profiles,
     run_aws_json,
 )
@@ -28,7 +26,9 @@ from .config import (
     aws_env_without_profile,
     check_companies_config,
     ensure_aws_config_file,
+    get_profile_usage_rank,
     get_company_last_selection,
+    increase_profile_usage,
     load_companies,
     preview_aws_config_cleanup_for_sessions,
     require_aws_cli,
@@ -51,7 +51,8 @@ from .ui import (
     set_company_name,
     suspend_ui,
 )
-from .utils import build_profile_name, move_preferred_first, shell_quote
+from .utils import move_preferred_first, shell_quote
+from .utils import rank_items_by_usage
 
 
 # ---------------------------------------------------------------------------
@@ -59,74 +60,48 @@ from .utils import build_profile_name, move_preferred_first, shell_quote
 # ---------------------------------------------------------------------------
 
 def select_profile(cfg: Dict[str, str]) -> Optional[Tuple[str, str, str]]:
-    """Interactive account and role selection with SSO auto-login.
+    """Interactive managed profile selection using local ~/.aws/config cache.
 
-    Displays a menu of accessible AWS accounts (last-selected first),
-    then a role menu if multiple roles exist. Handles Clear Session
-    and Refresh/Reconfigure inline. Returns (profile, account_name,
-    role_name) or None on cancel.
+    This flow avoids network/API account discovery by default and uses only
+    already generated profiles for the active sso_session. Refresh remains
+    explicit via menu option.
     """
     init_ui()
     company_name = cfg.get("awsCompanyName", "My Company")
     cached = get_company_last_selection(cfg, company_name)
     cfg.update(cached)
-    login_attempts = 0
-    accounts: Optional[List] = None
+    usage_rank = get_profile_usage_rank(cfg, company_name)
+    profiles: Optional[List[Dict[str, str]]] = None
 
     while True:
-        if accounts is None:
-            started = dt.datetime.now()
-            msg_info("Loading accessible AWS accounts...")
-            try:
-                accounts = list_accessible_accounts(cfg)
-            except Exception as exc:
-                msg_error(str(exc))
-                return None
+        if profiles is None:
+            profiles = list_managed_profiles(cfg)
 
-            sec = int((dt.datetime.now() - started).total_seconds())
-            if accounts:
-                msg_success(f"Loaded {len(accounts)} accounts in {sec}s.")
-            else:
-                if login_attempts == 0:
-                    login_attempts += 1
-                    if not is_sso_token_valid(cfg):
-                        msg_warn("No accessible accounts found and token is invalid. Attempting SSO login...")
-                        suspended = is_ui_active() and suspend_ui()
-                        try:
-                            login_rc = subprocess.run(
-                                ["aws", "sso", "login", "--sso-session", cfg["awsDefaultSession"]],
-                                text=True,
-                                env=aws_env_without_profile(),
-                            ).returncode
-                        finally:
-                            if suspended:
-                                resume_ui()
-                        if login_rc == 0:
-                            msg_success("SSO login successful. Retrying account list...")
-                            accounts = None
-                            continue
-                msg_error("No accessible accounts found.")
-                return None
+        mapping: Dict[str, Dict[str, str]] = {}
+        labels_by_profile: Dict[str, str] = {}
+        profile_names = [p["profile"] for p in profiles]
+        preferred_profile = cfg.get("lastProfile", "").strip()
+        ordered_profile_names = rank_items_by_usage(profile_names, usage_rank, preferred_profile)
 
-        mapping: Dict[str, Tuple[str, str]] = {}
-        account_labels: List[str] = []
-        preferred_account_id = cfg.get("lastAccountId", "").strip()
-        for aid, aname in accounts:
-            label = f"{aname} ({aid})"
-            mapping[label] = (aid, aname)
-            account_labels.append(label)
+        ordered_labels: List[str] = []
+        for name in ordered_profile_names:
+            item = next((p for p in profiles if p["profile"] == name), None)
+            if item is None:
+                continue
+            label = f"{item['profile']} | {item['accountName']} ({item['accountId']}) | {item['roleName']}"
+            mapping[label] = item
+            labels_by_profile[item["profile"]] = label
+            ordered_labels.append(label)
 
-        preferred_label = ""
-        if preferred_account_id:
-            for label, (aid, _) in mapping.items():
-                if aid == preferred_account_id:
-                    preferred_label = label
-                    break
+        if not ordered_labels:
+            msg_warn(
+                "No managed profiles found in ~/.aws/config for this session. "
+                "Use 'Refresh/Reconfigure Profiles' to populate them."
+            )
 
-        account_labels = move_preferred_first(account_labels, preferred_label)
-        choices = account_labels + ["Refresh/Reconfigure Profiles", "Clear Session", "Exit"]
+        choices = ordered_labels + ["Refresh/Reconfigure Profiles", "Clear Session", "Exit"]
 
-        choice = choose_menu("Select AWS Account:", choices)
+        choice = choose_menu("Select AWS Profile:", choices)
         if choice is None or choice == "Exit":
             return None
         if choice == "Clear Session":
@@ -134,38 +109,21 @@ def select_profile(cfg: Dict[str, str]) -> Optional[Tuple[str, str, str]]:
                 flash_center("Session cleared.", 1.0, "OK")
             return ("__CLEAR__", "", "")
         if choice == "Refresh/Reconfigure Profiles":
+            if not ensure_sso_session(cfg):
+                msg_error("Could not refresh profiles because SSO authentication failed.")
+                continue
             create_aws_profiles(cfg)
-            accounts = None
+            profiles = None
             continue
-        if choice not in mapping:
+        if choice not in mapping or choice not in ordered_labels:
             msg_warn("Invalid account selection. Please try again.")
             continue
 
-        account_id, account_name = mapping[choice]
-        roles = list_account_roles(cfg, account_id)
-        if not roles:
-            msg_warn(f"No roles found for account '{account_name}'.")
-            continue
-
-        if len(roles) == 1:
-            selected_role = roles[0]
-            msg_info(f"Single role found for '{account_name}': {selected_role}")
-        else:
-            preferred_role = (
-                cfg.get("lastRoleName", "").strip()
-                if account_id == cfg.get("lastAccountId", "").strip()
-                else ""
-            )
-            ordered_roles = move_preferred_first(roles, preferred_role)
-            role_choice = choose_menu(
-                f"Select role for '{account_name}':", ordered_roles + ["Exit"],
-            )
-            if role_choice is None or role_choice == "Exit":
-                continue
-            selected_role = role_choice
-
-        profile = build_profile_name(account_name, selected_role)
-        create_profile_if_missing(cfg, profile, account_id, selected_role)
+        selected = mapping[choice]
+        profile = selected["profile"]
+        account_id = selected["accountId"]
+        account_name = selected["accountName"]
+        selected_role = selected["roleName"]
 
         cfg["lastAccountId"] = account_id
         cfg["lastAccountName"] = account_name
@@ -177,6 +135,7 @@ def select_profile(cfg: Dict[str, str]) -> Optional[Tuple[str, str, str]]:
             "lastRoleName": selected_role,
             "lastProfile": profile,
         })
+        increase_profile_usage(profile, company_name)
         save_company_last_selection(company_name, {
             "lastAccountId": account_id,
             "lastAccountName": account_name,
@@ -229,7 +188,11 @@ def _prepare_others_profile(base_cfg: Dict[str, str]) -> Optional[Tuple[str, str
             flash_center(message, 1.4, "WARN")
         return ("__NO_PROFILES__", "", False)
 
-    choice = choose_menu("Select external profile (Others):", [*profiles, "Clear Session", "Exit"])
+    usage_rank = get_profile_usage_rank(base_cfg)
+    preferred_profile = str(base_cfg.get("lastProfile", "")).strip()
+    ordered_profiles = rank_items_by_usage(profiles, usage_rank, preferred_profile)
+
+    choice = choose_menu("Select external profile (Others):", [*ordered_profiles, "Clear Session", "Exit"])
     if choice is None or choice == "Exit":
         return None
     if choice == "Clear Session":
@@ -250,7 +213,7 @@ def _prepare_others_profile(base_cfg: Dict[str, str]) -> Optional[Tuple[str, str
 # Shared helpers for awsswitch / eksswitch
 # ---------------------------------------------------------------------------
 
-def _export_credentials(profile: str) -> Optional[List[str]]:
+def _export_credentials(profile: str, show_error: bool = True) -> Optional[List[str]]:
     """Export temporary credentials for a profile as shell export lines.
 
     Filters out region-related exports (handled separately) and returns
@@ -261,7 +224,8 @@ def _export_credentials(profile: str) -> Optional[List[str]]:
         text=True, capture_output=True, env=aws_env_without_profile(),
     )
     if proc.returncode != 0:
-        msg_error(proc.stderr.strip() or "Failed to export credentials")
+        if show_error:
+            msg_error(proc.stderr.strip() or "Failed to export credentials")
         return None
 
     lines: List[str] = []
@@ -276,17 +240,32 @@ def _export_credentials(profile: str) -> Optional[List[str]]:
     return lines
 
 
+def _export_credentials_with_fallback(profile: str, cfg: Dict[str, str]) -> Optional[List[str]]:
+    """Export credentials, falling back to interactive SSO login only if required.
+
+    This mirrors the practical behavior from v1: try credential export first
+    (which allows AWS CLI to reuse/refresh SSO internally), and only trigger
+    browser login if export fails.
+    """
+    export_lines = _export_credentials(profile, show_error=False)
+    if export_lines is not None:
+        return export_lines
+
+    msg_warn("Could not export credentials from current cache. Trying SSO login fallback...")
+    if not ensure_sso_session(cfg):
+        return None
+
+    return _export_credentials(profile, show_error=True)
+
+
 def prepare_profile_selection(
     cfg: Dict[str, str],
 ) -> Optional[Tuple[str, str, str, str, bool, List[str]]]:
-    """Full selection pipeline: SSO session → profile → region → credentials.
+    """Full selection pipeline: profile → region → credentials (+SSO fallback).
 
     Returns (profile, account_name, role_name, region, is_custom, export_lines)
     or None on failure/cancel.
     """
-    if not ensure_sso_session(cfg):
-        return None
-
     selected = select_profile(cfg)
     if selected is None:
         return None
@@ -300,7 +279,7 @@ def prepare_profile_selection(
     region, is_custom_region = region_selection
 
     msg_success(f"Profile selected: {profile}")
-    export_lines = _export_credentials(profile)
+    export_lines = _export_credentials_with_fallback(profile, cfg)
     if export_lines is None:
         return None
     msg_info("Programmatic credentials exported.")
@@ -364,6 +343,7 @@ def do_awsswitch(cfg: Dict[str, str], emit_shell: bool) -> int:
                 return _handle_clear(emit_shell)
 
             save_last_selection({"lastProfile": profile, "lastRegion": region})
+            increase_profile_usage(profile)
             if emit_shell:
                 flash_center("Environment session configured successfully", 1.0, "OK")
                 close_ui()
@@ -551,6 +531,10 @@ def do_eksswitch(cfg: Dict[str, str], emit_shell: bool) -> int:
         selected_cfg["lastCluster"] = selected_cluster
         save_values["lastCluster"] = selected_cluster
     save_last_selection(save_values)
+    if mode == "others":
+        increase_profile_usage(profile)
+    else:
+        increase_profile_usage(profile, selected_cfg.get("awsCompanyName", "My Company"))
     save_company_last_selection(selected_cfg.get("awsCompanyName", "My Company"), save_values)
     return 0
 
@@ -643,11 +627,7 @@ def do_awsswitch_last(cfg: Dict[str, str], emit_shell: bool) -> int:
     region = selection["lastRegion"]
 
     if mode == "managed":
-        if not ensure_sso_session(selected_cfg):
-            if emit_shell:
-                close_ui()
-            return 1
-        export_lines = _export_credentials(profile)
+        export_lines = _export_credentials_with_fallback(profile, selected_cfg)
         if export_lines is None:
             if emit_shell:
                 close_ui()
@@ -656,6 +636,7 @@ def do_awsswitch_last(cfg: Dict[str, str], emit_shell: bool) -> int:
         role_name = selection.get("lastRoleName") or profile
 
         msg_success(f"Reusing last selection: {profile} ({region})")
+        increase_profile_usage(profile, selected_cfg.get("awsCompanyName", "My Company"))
         if emit_shell:
             flash_center("Environment session configured successfully", 1.0, "OK")
             close_ui()
@@ -664,6 +645,7 @@ def do_awsswitch_last(cfg: Dict[str, str], emit_shell: bool) -> int:
 
     # Others / non-managed profile — no credentials export.
     msg_success(f"Reusing last selection: {profile} ({region})")
+    increase_profile_usage(profile)
     if emit_shell:
         flash_center("Environment session configured successfully", 1.0, "OK")
         close_ui()
@@ -723,11 +705,7 @@ def do_eksswitch_last(cfg: Dict[str, str], emit_shell: bool) -> int:
         return 1
 
     if mode == "managed":
-        if not ensure_sso_session(selected_cfg):
-            if emit_shell:
-                close_ui()
-            return 1
-        export_lines = _export_credentials(profile)
+        export_lines = _export_credentials_with_fallback(profile, selected_cfg)
         if export_lines is None:
             if emit_shell:
                 close_ui()
@@ -746,6 +724,10 @@ def do_eksswitch_last(cfg: Dict[str, str], emit_shell: bool) -> int:
         return 1
 
     msg_success(f"Reusing last selection: {profile} ({region}) -> {cluster}")
+    if mode == "managed":
+        increase_profile_usage(profile, selected_cfg.get("awsCompanyName", "My Company"))
+    else:
+        increase_profile_usage(profile)
     if emit_shell:
         flash_center("Environment session configured successfully", 1.0, "OK")
         close_ui()

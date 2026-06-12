@@ -14,7 +14,7 @@ import json
 import re
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Any, Dict, List, Optional, Tuple, Set
 
 from .config import (
     AWS_CONFIG,
@@ -24,7 +24,7 @@ from .config import (
 )
 from .regions import fetch_aws_regions, save_aws_regions
 from .ui import msg_error, msg_info, msg_success, msg_warn, is_ui_active, suspend_ui, resume_ui
-from .utils import build_profile_name, normalize_start_url, parse_iso8601
+from .utils import build_profile_name, normalize_start_url, parse_iso8601, sanitize_name
 
 # In-memory caches to avoid redundant API calls within a session.
 # Cleared explicitly via clear_account_caches() when user requests refresh.
@@ -66,9 +66,19 @@ def load_sso_cache_entries(start_url: str, session_name: str = "") -> List[Dict]
     target_session = (session_name or "").strip()
 
     # Files we explicitly trust based on filename (modern + legacy).
+    # Also include other session names that point to the same start URL in
+    # ~/.aws/config to survive case-only session divergences.
     trusted_names: Set[str] = set()
+
+    if target_url:
+        for sess_name, sess_url in _parse_sso_session_sections().items():
+            if normalize_start_url(sess_url) == target_url:
+                trusted_names.add(_sso_cache_filename(sess_name))
+
     if target_session:
         trusted_names.add(_sso_cache_filename(target_session))
+        trusted_names.add(_sso_cache_filename(target_session.lower()))
+        trusted_names.add(_sso_cache_filename(target_session.upper()))
     if start_url:
         trusted_names.add(_sso_cache_filename(start_url.strip()))
         trusted_names.add(_sso_cache_filename(start_url.strip().rstrip("/")))
@@ -249,6 +259,81 @@ def _parse_profile_sections() -> Dict[str, Dict[str, str]]:
     return sections
 
 
+def _parse_sso_session_sections() -> Dict[str, str]:
+    """Parse [sso-session ...] sections from ~/.aws/config.
+
+    Returns a mapping of session name -> sso_start_url.
+    """
+    if not AWS_CONFIG.exists():
+        return {}
+
+    sessions: Dict[str, str] = {}
+    current_session: Optional[str] = None
+
+    for raw in AWS_CONFIG.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        m = re.fullmatch(r"\[sso-session\s+([^\]]+)\]", line)
+        if m:
+            current_session = m.group(1).strip()
+            sessions.setdefault(current_session, "")
+            continue
+
+        if current_session and "=" in line:
+            key, val = line.split("=", 1)
+            if key.strip().lower() == "sso_start_url":
+                sessions[current_session] = val.strip()
+
+    return sessions
+
+
+def _guess_account_name_from_profile(profile_name: str, role_name: str, account_id: str) -> str:
+    """Best-effort account name extraction from '<account>-<role>' profile format."""
+    safe_role = sanitize_name(role_name)
+    suffix = f"-{safe_role}" if safe_role else ""
+    if suffix and profile_name.endswith(suffix):
+        guessed = profile_name[: -len(suffix)].strip("-")
+        if guessed:
+            return guessed
+    return account_id
+
+
+def list_managed_profiles(cfg: Dict[str, str]) -> List[Dict[str, str]]:
+    """List managed profiles from ~/.aws/config for the selected sso_session.
+
+    This is intentionally cache-based (local config only) and does not call AWS APIs.
+    """
+    target_session = str(cfg.get("awsDefaultSession", "")).strip()
+    if not target_session:
+        return []
+
+    target_lower = target_session.lower()
+    profiles = _parse_profile_sections()
+    out: List[Dict[str, str]] = []
+
+    for profile_name, keys in profiles.items():
+        session = str(keys.get("sso_session", "")).strip()
+        if not session or session.lower() != target_lower:
+            continue
+
+        account_id = str(keys.get("sso_account_id", "")).strip()
+        role_name = str(keys.get("sso_role_name", "")).strip()
+        if not account_id or not role_name:
+            continue
+
+        out.append({
+            "profile": profile_name,
+            "accountId": account_id,
+            "roleName": role_name,
+            "accountName": _guess_account_name_from_profile(profile_name, role_name, account_id),
+        })
+
+    out.sort(key=lambda item: item["profile"].lower())
+    return out
+
+
 def list_other_profiles(managed_sessions: Set[str]) -> List[str]:
     """List profiles that are not managed by this app.
 
@@ -258,11 +343,12 @@ def list_other_profiles(managed_sessions: Set[str]) -> List[str]:
     """
     profiles = _parse_profile_sections()
     out: List[str] = []
+    managed_sessions_lower = {s.lower() for s in managed_sessions if s}
 
     for profile_name, keys in profiles.items():
-        session = keys.get("sso_session", "")
+        session = str(keys.get("sso_session", ""))
         is_managed = (
-            session in managed_sessions
+            session.lower() in managed_sessions_lower
             and "sso_account_id" in keys
             and "sso_role_name" in keys
         )
