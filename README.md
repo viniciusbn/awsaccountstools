@@ -2,7 +2,7 @@
 
 Interactive CLI toolkit for switching between AWS SSO accounts, roles, regions, and EKS clusters across multiple companies. Features a full-screen curses TUI with arrow-key navigation, color-coded feedback, and last-selection memory for fast re-use.
 
-Current documentation target: **2.1.2**
+Current documentation target: **2.1.3**
 
 ## Features
 

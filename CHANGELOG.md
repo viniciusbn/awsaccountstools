@@ -2,6 +2,18 @@
 
 All notable changes for this project are documented in this file.
 
+## 2.1.3 - 2026-06-22
+
+### Changed
+
+- Credential export now proactively validates the SSO session before calling `aws configure export-credentials`. If the SSO token is expired or missing, `aws sso login` is triggered first, ensuring that `AWS_PROFILE` and the exported STS credentials are always in sync.
+- `awsswitch`, `eksswitch`, and their `last` shortcuts will now prompt for browser re-authentication whenever the SSO session has expired, instead of silently exporting stale cached STS credentials that would later cause `InvalidGrantException` errors in tools such as Terraform and Terragrunt.
+
+### Fixed
+
+- Fixed a split-brain authentication state where the SSO token could expire while valid STS credentials still existed in the CLI cache. In that state, tools that give priority to `AWS_PROFILE` (e.g. Terraform's AWS Go SDK) would attempt a profile-based credential refresh, fail with `InvalidGrantException`, and ignore the still-valid environment-variable credentials entirely.
+- `awsswitch last` and `eksswitch last` now consistently renew the SSO session when needed, making them safe to call at any point during the day to restore a broken session.
+
 ## 2.1.2 - 2026-06-10
 
 ### Changed

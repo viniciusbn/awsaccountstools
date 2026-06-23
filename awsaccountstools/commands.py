@@ -241,12 +241,21 @@ def _export_credentials(profile: str, show_error: bool = True) -> Optional[List[
 
 
 def _export_credentials_with_fallback(profile: str, cfg: Dict[str, str]) -> Optional[List[str]]:
-    """Export credentials, falling back to interactive SSO login only if required.
+    """Export credentials, ensuring the profile's SSO session is still valid.
 
-    This mirrors the practical behavior from v1: try credential export first
-    (which allows AWS CLI to reuse/refresh SSO internally), and only trigger
-    browser login if export fails.
+    In mixed mode (AWS_PROFILE plus exported temporary credentials), tools like
+    Terraform/Terragrunt may prefer the profile chain. If SSO is expired but
+    cached STS credentials still exist, exporting credentials can succeed while
+    profile-based calls fail later with InvalidGrantException.
+
+    To avoid that split-brain state, proactively refresh SSO before exporting
+    whenever the token is expired/missing.
     """
+    if not is_sso_token_valid(cfg):
+        msg_warn("SSO session expired or missing. Renewing login before exporting credentials...")
+        if not ensure_sso_session(cfg):
+            return None
+
     export_lines = _export_credentials(profile, show_error=False)
     if export_lines is not None:
         return export_lines
