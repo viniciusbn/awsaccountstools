@@ -5,3 +5,4 @@
 bin/gum
 __pycache__/
 *.pyc
+.aws.code-workspace
